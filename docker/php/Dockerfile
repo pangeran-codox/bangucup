@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     libpng-dev \
     libonig-dev \
     libxml2-dev \
+    libicu-dev \
+    && docker-php-ext-configure intl \
     && docker-php-ext-install \
     pdo \
     pdo_pgsql \
@@ -21,6 +23,7 @@ RUN apt-get update && apt-get install -y \
     bcmath \
     gd \
     zip \
+    intl \
     opcache
 
 # Install Composer
