@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Filament\Resources\Invoices\Tables;
+namespace App\Filament\Resources\Payments\Tables;
 
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
@@ -9,79 +9,66 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 
-class InvoicesTable
+class PaymentsTable
 {
     public static function configure(Table $table): Table
     {
         return $table
             ->columns([
-                TextColumn::make('invoice_number')
+                TextColumn::make('invoice.invoice_number')
                     ->label('No. Invoice')
                     ->searchable()
                     ->sortable(),
-                TextColumn::make('customer.name')
-                    ->label('Pelanggan')
-                    ->searchable()
-                    ->sortable(),
-                TextColumn::make('type')
-                    ->label('Jenis')
+                TextColumn::make('gateway')
+                    ->label('Gateway')
                     ->badge()
                     ->color(fn (string $state): string => match ($state) {
-                        'installation' => 'info',
-                        'monthly' => 'primary',
+                        'midtrans' => 'info',
+                        'xendit' => 'primary',
+                        'manual' => 'success',
                         'other' => 'gray',
                         default => 'gray',
                     })
                     ->formatStateUsing(fn (string $state): string => match ($state) {
-                        'installation' => 'Instalasi',
-                        'monthly' => 'Bulanan',
+                        'midtrans' => 'Midtrans',
+                        'xendit' => 'Xendit',
+                        'manual' => 'Manual',
                         'other' => 'Lainnya',
                         default => $state,
                     }),
+                TextColumn::make('method')
+                    ->label('Metode')
+                    ->searchable(),
                 TextColumn::make('amount')
                     ->label('Jumlah')
                     ->money('IDR')
-                    ->sortable(),
-                TextColumn::make('due_date')
-                    ->label('Jatuh tempo')
-                    ->date('d M Y')
                     ->sortable(),
                 TextColumn::make('status')
                     ->label('Status')
                     ->badge()
                     ->color(fn (string $state): string => match ($state) {
-                        'unpaid' => 'warning',
-                        'paid' => 'success',
-                        'overdue' => 'danger',
-                        'cancelled' => 'gray',
+                        'pending' => 'warning',
+                        'success' => 'success',
+                        'failed' => 'danger',
+                        'expired' => 'gray',
                         default => 'gray',
                     })
                     ->formatStateUsing(fn (string $state): string => match ($state) {
-                        'unpaid' => 'Belum bayar',
-                        'paid' => 'Lunas',
-                        'overdue' => 'Terlambat',
-                        'cancelled' => 'Dibatalkan',
+                        'pending' => 'Menunggu',
+                        'success' => 'Berhasil',
+                        'failed' => 'Gagal',
+                        'expired' => 'Kedaluwarsa',
                         default => $state,
                     }),
-                TextColumn::make('discount_amount')
-                    ->label('Diskon')
-                    ->money('IDR')
-                    ->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('subscription.pppoe_username')
-                    ->label('Username PPPoE')
-                    ->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('voucher.code')
-                    ->label('Voucher')
-                    ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('paid_at')
                     ->label('Dibayar pada')
                     ->dateTime()
+                    ->sortable(),
+                TextColumn::make('gateway_transaction_id')
+                    ->label('ID transaksi')
+                    ->searchable()
                     ->toggleable(isToggledHiddenByDefault: true),
                 TextColumn::make('created_at')
-                    ->dateTime()
-                    ->sortable()
-                    ->toggleable(isToggledHiddenByDefault: true),
-                TextColumn::make('updated_at')
                     ->dateTime()
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
@@ -90,20 +77,21 @@ class InvoicesTable
                 SelectFilter::make('status')
                     ->label('Status')
                     ->options([
-                        'unpaid' => 'Belum bayar',
-                        'paid' => 'Lunas',
-                        'overdue' => 'Terlambat',
-                        'cancelled' => 'Dibatalkan',
+                        'pending' => 'Menunggu',
+                        'success' => 'Berhasil',
+                        'failed' => 'Gagal',
+                        'expired' => 'Kedaluwarsa',
                     ]),
-                SelectFilter::make('type')
-                    ->label('Jenis')
+                SelectFilter::make('gateway')
+                    ->label('Gateway')
                     ->options([
-                        'installation' => 'Instalasi',
-                        'monthly' => 'Bulanan',
+                        'midtrans' => 'Midtrans',
+                        'xendit' => 'Xendit',
+                        'manual' => 'Manual',
                         'other' => 'Lainnya',
                     ]),
             ])
-            ->defaultSort('due_date', 'asc')
+            ->defaultSort('created_at', 'desc')
             ->recordActions([
                 EditAction::make(),
             ])
