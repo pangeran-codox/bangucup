@@ -1,58 +1,99 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# 📋 Bangucup — Index Dokumentasi Project
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+> **Untuk sesi Claude baru**: baca file-file ini secara berurutan sebelum
+> mulai kerja, supaya tidak mengulang kesalahan atau tanya ulang hal yang
+> sudah pernah dibahas dan diputuskan. Semua file ini upload manual di
+> awal chat (user pakai Claude lewat web/app biasa, bukan Claude Code,
+> jadi tidak ada auto-discovery skill).
 
-## About Laravel
+## Urutan Baca
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+1. **`PROJECT-CONTEXT.md`** — Baca ini PERTAMA, selalu. Berisi ringkasan
+   project, tech stack, setup multi-komputer, arsitektur Docker lengkap
+   dengan semua bug yang pernah ditemukan beserta fix-nya, skema database,
+   role & permission, dan roadmap yang belum dikerjakan.
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+2. **`FILAMENT-RESOURCES.md`** — Baca ini kalau tugas berhubungan dengan
+   admin panel (bikin/edit Filament Resource). Berisi katalog lengkap 14
+   resource yang sudah dibuat, konvensi namespace yang wajib diikuti
+   (termasuk gotcha `Get`/`Section`/`Grid` yang sering salah), dan status
+   mana yang sudah ditest vs belum.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+3. **`FRONTEND-ARCHITECTURE.md`** — Baca ini kalau tugas berhubungan
+   dengan React/Inertia (bukan Filament admin panel). Berisi struktur
+   folder, konvensi penamaan halaman, dan catatan teknis Vite/HMR khusus
+   setup Docker ini.
 
-## Learning Laravel
+4. **`schema.sql`** — Skema database PostgreSQL lengkap (15 tabel custom).
+   Referensi kalau butuh detail kolom/tipe data/constraint.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+5. **File migration** (`database/migrations/2026_07_28_*.php` dan
+   `2026_07_29_*_create_permission_tables.php`) — implementasi Laravel
+   dari `schema.sql`. Jangan generate migration baru untuk tabel yang
+   sudah ada di sini.
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+6. **`RolePermissionSeeder.php`** — Definisi role & permission. Kalau mau
+   menambah modul baru yang butuh permission, tambahkan di sini.
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+## Aturan Emas Sebelum Mengedit Kode
 
-## Agentic Development
+1. **Selalu minta user paste isi file dulu** sebelum kasih instruksi edit
+   spesifik — jangan asumsikan struktur file dari training data.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+2. **Semua command dijalankan lewat Docker**, format:
+   ```bash
+   docker compose exec app php artisan <command>
+   docker compose exec app composer <command>
+   docker compose exec node npm <command>
+   ```
+   JANGAN sarankan command PHP/Composer/NPM langsung di CMD Windows.
 
-```bash
-composer require laravel/boost --dev
+3. **Ikuti konvensi namespace Filament** di `FILAMENT-RESOURCES.md` —
+   `Section`/`Grid`/`Get` dari `Filament\Schemas\Components\*`, bukan
+   `Filament\Forms\*`. Ini penyebab bug paling sering muncul sepanjang
+   project ini.
 
-php artisan boost:install
-```
+4. **Isi model dulu sebelum generate Filament Resource** — kalau model
+   masih stub kosong (`class X extends Model { // }`) pas
+   `make:filament-resource --generate` dijalankan, relasi gak
+   ke-detect dan bakal error "relationship does not exist" nanti pas form
+   dibuka. Ingatkan user urutannya: `make:model` → isi model lengkap →
+   baru `make:filament-resource --generate`.
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+5. **User kerja dari lebih dari satu komputer** — kalau ada tanda-tanda
+   environment beda dari yang terakhir dibahas (nama network Docker beda,
+   path folder beda, dll), konfirmasi dulu sebelum lanjut instruksi.
 
-## Contributing
+6. **Jangan bikin ulang Postgres/Redis container baru** — project ini
+   numpang ke infra existing user di komputer manapun yang lagi dipakai.
+   SELALU verifikasi nama network dulu (lihat `PROJECT-CONTEXT.md` bagian 3).
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+7. **User masih belajar** Docker/Laravel/Filament dari nol, tapi sudah
+   lumayan familiar dengan alur kerja dasar — jelaskan istilah baru
+   singkat, tapi jangan bertele-tele di hal yang sudah berulang kali
+   dilalui.
 
-## Code of Conduct
+## Status Progress (update manual tiap ada progress besar)
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+- [x] Setup Docker (Laravel 13 + PHP 8.4 + Postgres + Redis + Node)
+- [x] 15 tabel database + migration
+- [x] Inertia + React + Tailwind v4 terpasang
+- [x] Filament v5 terpasang, tema Amber + dark mode
+- [x] Role & Permission (Spatie) — role & permission ke-generate, BELUM
+      diterapkan sebagai gating di Resource
+- [x] **14 Filament Resource** — Customer, Package, Subscription, Odp,
+      Invoice, Payment, Device, Ticket (semua sudah ditest); Voucher,
+      Asset, AssetMovement, IsolirLog, NotificationLog, TicketReply
+      (kode sudah dibuat, belum ditest user)
+- [x] Setup multi-komputer tervalidasi (clone + rebuild environment dari
+      nol berhasil di komputer kedua)
+- [ ] Testing 6 resource yang baru disiapkan
+- [ ] Gating permission di Filament Resource
+- [ ] Convert TicketReply jadi Relation Manager
+- [ ] Integrasi Mikrotik API (isolir otomatis)
+- [ ] Setup & integrasi GenieACS
+- [ ] Integrasi payment gateway (Midtrans/Xendit)
+- [ ] Halaman React fungsional (baru ada 1 halaman percobaan)
+- [ ] Notifikasi WhatsApp (reminder tagihan)
+- [ ] Bikin `.env.example` (sekarang harus rekonstruksi manual tiap
+      komputer baru)

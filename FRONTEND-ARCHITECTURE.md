@@ -3,6 +3,10 @@
 > Dokumen ini fokus ke sisi frontend custom (React + Inertia), sebagai
 > pelengkap `PROJECT-CONTEXT.md` yang lebih fokus ke backend/infra.
 > Baca `PROJECT-CONTEXT.md` dulu untuk gambaran besar project.
+>
+> **Status**: belum ada progress baru di sisi ini sejak dokumen ini
+> pertama dibuat — semua development terbaru fokus ke Filament Resource
+> (lihat `FILAMENT-RESOURCES.md`). Bagian ini masih relevan apa adanya.
 
 ## 1. Kenapa Ada 2 Sistem Frontend Sekaligus
 
@@ -13,11 +17,11 @@ Project ini SENGAJA punya dua UI layer terpisah, jangan dicampur:
 | **Admin panel** | Filament (Livewire based) | Kelola data internal: pelanggan, invoice, tiket, aset, dll — dipakai admin/staff/teknisi | `app/Filament/Resources/**` |
 | **Custom frontend** | Inertia.js + React | Halaman yang butuh UI custom bebas: portal pelanggan, dashboard monitoring real-time, landing page | `resources/js/Pages/**` |
 
-Alasan keputusan ini (dari diskusi awal project): Filament kasih CRUD admin
-super cepat tanpa coding manual, tapi strukturnya kaku untuk hal yang butuh
-desain bebas. React dipakai HANYA untuk bagian yang benar-benar butuh
-fleksibilitas itu. **Jangan bikin ulang fitur admin yang sudah ada di
-Filament pakai React** — itu duplikasi kerja.
+Alasan keputusan ini: Filament kasih CRUD admin super cepat tanpa coding
+manual, tapi strukturnya kaku untuk hal yang butuh desain bebas. React
+dipakai HANYA untuk bagian yang benar-benar butuh fleksibilitas itu.
+**Jangan bikin ulang fitur admin yang sudah ada di Filament pakai React**
+— itu duplikasi kerja.
 
 ## 2. Stack Detail
 
@@ -161,6 +165,10 @@ plugins: [
 Container `node` menjalankan `npm run dev -- --host` terus-menerus
 (auto-restart tiap `docker compose up -d`). Tidak perlu manual jalankan
 `npm run dev` — edit file `.jsx` langsung ter-hot-reload di browser.
+
+**Catatan multi-komputer**: `node_modules` hidup di named Docker volume
+(`node_modules_data`), jadi otomatis kosong tiap pindah komputer. Perlu
+`docker compose exec node npm install` ulang setiap setup di komputer baru.
 
 Untuk install package React baru:
 ```bash
