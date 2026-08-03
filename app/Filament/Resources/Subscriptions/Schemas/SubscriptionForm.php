@@ -91,6 +91,24 @@ class SubscriptionForm
                                     ->label('Berhenti berlangganan'),
                             ]),
                     ]),
+                Section::make('Lokasi jaringan')
+                    ->columns(2)
+                    ->components([
+                        Select::make('odp_id')
+                            ->label('ODP')
+                            ->relationship('odp', 'name')
+                            ->searchable()
+                            ->preload(),
+                        TextInput::make('port_number')
+                            ->label('Nomor port')
+                            ->numeric(),
+                        Select::make('mikrotik_router_id')
+                            ->label('Router Mikrotik')
+                            ->relationship('mikrotikRouter', 'name')
+                            ->searchable()
+                            ->preload()
+                            ->helperText('Router yang mengelola koneksi PPPoE pelanggan ini'),
+                    ]),
             ]);
     }
 }

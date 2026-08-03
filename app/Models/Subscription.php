@@ -72,4 +72,9 @@ class Subscription extends Model
     {
         return $this->hasMany(AssetMovement::class);
     }
+
+    public function mikrotikRouter()
+    {
+        return $this->belongsTo(MikrotikRouter::class);
+    }
 }
