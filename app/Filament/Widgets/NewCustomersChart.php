@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 
 class NewCustomersChart extends ChartWidget
 {
-    protected static ?string $heading = 'Pelanggan Baru per Bulan';
+    protected ?string $heading = 'Pelanggan Baru per Bulan';
 
     protected static ?int $sort = 4;
 

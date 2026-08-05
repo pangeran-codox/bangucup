@@ -7,6 +7,7 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
+        "dotswan/filament-map-picker": "^2.3",
         "evilfreelancer/routeros-api-php": "^1.7",
         "filament/filament": "^5.7",
         "inertiajs/inertia-laravel": "^3.1",
