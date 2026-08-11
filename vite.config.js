@@ -27,6 +27,11 @@ export default defineConfig({
         },
         watch: {
             ignored: ['**/storage/framework/views/**'],
+            // Bind mount Docker di Windows kadang gak nerusin event filesystem
+            // ke watcher di dalam container, jadi Vite gak sadar file berubah.
+            // Polling maksa Vite ngecek perubahan tiap interval, bukan nunggu event OS.
+            usePolling: true,
+            interval: 300,
         },
     },
 });

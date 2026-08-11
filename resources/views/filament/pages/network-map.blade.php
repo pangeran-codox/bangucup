@@ -64,9 +64,28 @@
     @assets
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
     @endassets
+
+    <script>
+        // Load Leaflet lalu Leaflet.draw SATU-SATU secara berantai (bukan lewat
+        // banyak tag <script> sekaligus yang urutan eksekusinya tidak dijamin).
+        // Ini mencegah race condition dengan plugin dotswan/filament-map-picker
+        // yang juga meload Leaflet versinya sendiri di halaman admin lain.
+        window.__nmLeafletReady = window.__nmLeafletReady || new Promise((resolve) => {
+            const coreScript = document.createElement('script');
+            coreScript.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+            coreScript.onload = () => {
+                const drawScript = document.createElement('script');
+                drawScript.src = 'https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js';
+                drawScript.onload = () => {
+                    window.__nmLeaflet = window.L;
+                    resolve(window.__nmLeaflet);
+                };
+                document.head.appendChild(drawScript);
+            };
+            document.head.appendChild(coreScript);
+        });
+    </script>
 
     <style>
         .nm-layout {
@@ -233,10 +252,22 @@
 
                 init(wire) {
                     this.wire = wire;
-                    this.$nextTick(() => this.setupMap());
+                    this.$nextTick(async () => {
+                        await window.__nmLeafletReady;
+                        this.setupMap();
+                    });
                 },
 
                 setupMap() {
+                    const L = window.__nmLeaflet;
+
+                    // Jaga-jaga kalau setupMap sempat kepanggil 2x (misal navigasi SPA
+                    // Filament tanpa full reload) — bersihkan instance lama dulu.
+                    if (this.map) {
+                        this.map.remove();
+                        this.map = null;
+                    }
+
                     const center = this.odps.length
                         ? [this.odps[0].lat, this.odps[0].lng]
                         : [-2.5, 118.0];
@@ -302,6 +333,7 @@
                 },
 
                 addRouteLayer(route) {
+                    const L = window.__nmLeaflet;
                     const latlngs = route.path.map((p) => [p.lat, p.lng]);
                     const layer = L.polyline(latlngs, {
                         color: route.status === 'damaged' ? '#ef4444' : '#2563eb',
