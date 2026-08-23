@@ -1,181 +1,231 @@
 # Frontend Architecture — Bangucup
 
-> Dokumen ini fokus ke sisi frontend custom (React + Inertia), sebagai
-> pelengkap `PROJECT-CONTEXT.md` yang lebih fokus ke backend/infra.
-> Baca `PROJECT-CONTEXT.md` dulu untuk gambaran besar project.
->
-> **Status**: belum ada progress baru di sisi ini sejak dokumen ini
-> pertama dibuat — semua development terbaru fokus ke Filament Resource
-> (lihat `FILAMENT-RESOURCES.md`). Bagian ini masih relevan apa adanya.
+> Fokus ke `frontend/admin/`. Baca `PROJECT-CONTEXT.md` dulu untuk gambaran besar.
 
-## 1. Kenapa Ada 2 Sistem Frontend Sekaligus
+---
 
-Project ini SENGAJA punya dua UI layer terpisah, jangan dicampur:
+## Stack
 
-| Layer | Teknologi | Untuk apa | Lokasi |
-|---|---|---|---|
-| **Admin panel** | Filament (Livewire based) | Kelola data internal: pelanggan, invoice, tiket, aset, dll — dipakai admin/staff/teknisi | `app/Filament/Resources/**` |
-| **Custom frontend** | Inertia.js + React | Halaman yang butuh UI custom bebas: portal pelanggan, dashboard monitoring real-time, landing page | `resources/js/Pages/**` |
+| Teknologi | Versi | Fungsi |
+|---|---|---|
+| React | 19 | UI framework |
+| TypeScript | 5.8 | Type safety |
+| Vite | 6 | Build tool |
+| React Router | 7 | Client-side routing |
+| TanStack Query | 5 | Server state + cache |
+| Zustand | 5 | Client state (auth) |
+| Axios | 1.9 | HTTP client |
+| ECharts + echarts-for-react | 5 | Charts |
+| Tailwind CSS | 3 | Styling |
+| Shadcn/ui (Radix UI) | — | UI components |
+| lucide-react | — | Icons |
 
-Alasan keputusan ini: Filament kasih CRUD admin super cepat tanpa coding
-manual, tapi strukturnya kaku untuk hal yang butuh desain bebas. React
-dipakai HANYA untuk bagian yang benar-benar butuh fleksibilitas itu.
-**Jangan bikin ulang fitur admin yang sudah ada di Filament pakai React**
-— itu duplikasi kerja.
+---
 
-## 2. Stack Detail
-
-- **Inertia.js v3** (`@inertiajs/react`, `inertiajs/inertia-laravel`) —
-  jembatan Laravel↔React tanpa perlu bikin REST API terpisah
-- **React 18** (bukan Vue — keputusan user karena ingin belajar React,
-  ekosistemnya lebih besar, dan `shadcn/ui` yang direncanakan berbasis React)
-- **Tailwind CSS v4** — sudah include default dari starter kit Laravel 13,
-  integrasi via plugin Vite (`@tailwindcss/vite`), BUKAN via
-  `tailwind.config.js` terpisah (beda dari Tailwind v3)
-- **Vite** sebagai build tool, jalan di container terpisah (`node`, port
-  `5173`)
-- **shadcn/ui** — DIRENCANAKAN dipakai untuk komponen React yang lebih
-  polished, TAPI BELUM di-install di project ini. Kalau mau install nanti,
-  ingat: shadcn/ui butuh setup `components.json` + copy komponen manual
-  (bukan npm package biasa)
-
-## 3. Struktur Folder Frontend
+## Struktur Folder
 
 ```
-resources/
-├── css/
-│   └── app.css              (entry Tailwind)
-├── js/
-│   ├── app.jsx               (entry point utama, setup createInertiaApp)
-│   └── Pages/                (setiap file = 1 halaman/route)
-│       └── Welcome.jsx       (halaman percobaan pertama, masih dummy)
-└── views/
-    └── app.blade.php         (root Blade, wadah HTML tempat React di-mount)
+src/
+├── app/
+│   ├── queryClient.ts       ← TanStack Query client
+│   │                           retry: false, refetchOnMount: false
+│   ├── router.tsx           ← React Router v7, lazy loading
+│   └── ProtectedRoute.tsx   ← ProtectedRoute + GuestRoute + useLogout
+│
+├── components/
+│   ├── ui/                  ← Shadcn: Button, Input, Card, Label,
+│   │                           Separator, Avatar, DropdownMenu
+│   ├── charts/
+│   │   └── TrafficChart.tsx ← ECharts RX/TX area chart
+│   └── layout/
+│       ├── AppLayout.tsx    ← Shell: Sidebar + Topbar + Outlet
+│       ├── AuthLayout.tsx   ← Split panel login
+│       ├── Sidebar.tsx      ← Nav + user section + logout
+│       └── Topbar.tsx       ← Search + notif + mobile menu
+│
+├── features/
+│   ├── auth/
+│   │   ├── LoginPage.tsx    ← POST /api/auth/login
+│   │   └── NotFoundPage.tsx
+│   ├── dashboard/
+│   │   └── DashboardPage.tsx  ← useAuthQuery /dashboard/stats
+│   ├── monitoring/
+│   │   └── MonitoringPage.tsx ← useAuthQuery /routers + WebSocket
+│   ├── customers/
+│   │   └── CustomersPage.tsx  ← placeholder
+│   ├── routers/
+│   │   └── RoutersPage.tsx    ← placeholder
+│   └── shared/
+│       └── ComingSoonPage.tsx ← halaman statis, tidak ada query
+│
+├── hooks/
+│   ├── useAuthQuery.ts      ← wrapper useQuery: enabled hanya kalau hasHydrated && !!token
+│   └── useTrafficSocket.ts  ← WebSocket hook: history per router, auto-reconnect
+│
+├── services/
+│   ├── api/
+│   │   ├── client.ts        ← Axios: auto-attach Bearer, handle 401
+│   │   └── auth.ts          ← authApi.login(), logout(), me()
+│   └── websocket/
+│       └── trafficSocket.ts ← TrafficSocket class, exponential backoff reconnect
+│
+├── stores/
+│   └── authStore.ts         ← Zustand + persist localStorage
+│                               fields: user, token, isAuthenticated, _hasHydrated
+│
+├── types/
+│   ├── index.ts             ← User, Customer, Invoice, MikrotikRouter, DashboardStats...
+│   └── realtime.ts          ← RouterSnapshot, InterfaceTraffic, WsSubscribeMsg
+│
+└── lib/
+    └── utils.ts             ← cn(), formatBps(), formatCurrency(), formatDate()
 ```
 
-### Konvensi penamaan halaman (Inertia)
-- Nama file di `resources/js/Pages/` HARUS match string yang dipakai di
-  `Inertia::render('NamaFile')` dari Controller/route Laravel
-- Untuk halaman bersarang, pakai folder: `Pages/Customers/Index.jsx` diakses
-  lewat `Inertia::render('Customers/Index')`
-- Semua file halaman WAJIB `export default function`
+---
 
-## 4. File Kunci & Isinya Saat Ini
+## Auth Flow
 
-### `resources/js/app.jsx`
-```jsx
-import '../css/app.css';
-import { createInertiaApp } from '@inertiajs/react';
-import { createRoot } from 'react-dom/client';
-
-createInertiaApp({
-    resolve: (name) => {
-        const pages = import.meta.glob('./Pages/**/*.jsx');
-        return pages[`./Pages/${name}.jsx`]();
-    },
-    setup({ el, App, props }) {
-        createRoot(el).render(<App {...props} />);
-    },
-});
+### Login
+```
+LoginPage.handleSubmit()
+  → POST /api/auth/login
+    → { token, user }
+      → authStore.setAuth(user, token)   ← persist localStorage
+        → navigate('/dashboard')
 ```
 
-### `resources/views/app.blade.php`
-```blade
-<!DOCTYPE html>
-<html lang="id">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Bangucup</title>
-    @viteReactRefresh
-    @vite(['resources/js/app.jsx'])
-    @inertiaHead
-</head>
-<body>
-    @inertia
-</body>
-</html>
+### Page load (setelah refresh)
 ```
-**PENTING**: `@viteReactRefresh` HARUS ada sebelum `@vite(...)`, kalau
-kelewat muncul error "can't detect preamble" di console browser.
+app load → queryClient.clear()          ← bersihkan cache lama
+         → Zustand hydrate localStorage
+           → _hasHydrated = true
+             → ProtectedRoute cek isAuthenticated
+               → kalau false → /login
+               → kalau true  → render halaman
+```
 
-### `bootstrap/app.php`
-Middleware Inertia (`HandleInertiaRequests`) didaftarkan di sini (Laravel
-13 tidak pakai `Kernel.php` lagi):
-```php
-->withMiddleware(function (Middleware $middleware): void {
-    $middleware->web(append: [
-        \App\Http\Middleware\HandleInertiaRequests::class,
-    ]);
+### Axios 401
+```
+response 401
+  → cek: _hasHydrated && isAuthenticated
+    → ya → authStore.logout() → clear state + queryClient.clear()
+          → ProtectedRoute otomatis redirect /login
+    → tidak → skip (belum hydrated, jangan logout)
+```
+
+---
+
+## useAuthQuery
+
+Semua request yang butuh auth **wajib** pakai ini, bukan `useQuery` biasa:
+
+```ts
+import { useAuthQuery } from '@/hooks/useAuthQuery'
+
+const { data, isLoading } = useAuthQuery<MyType>({
+  queryKey: ['my-key'],
+  queryFn: async () => {
+    const { data } = await apiClient.get('/my-endpoint')
+    return data.data
+  },
 })
 ```
 
-### `vite.config.js` — bagian yang WAJIB ada untuk Docker
-```js
-server: {
-    host: '0.0.0.0',
-    port: 5173,
-    strictPort: true,
-    hmr: {
-        host: 'localhost',
-    },
-    watch: {
-        ignored: ['**/storage/framework/views/**'],
-    },
-},
-```
-Tanpa `hmr.host: 'localhost'` yang eksplisit, browser akan coba connect ke
-alamat IPv6 (`[::1]:5173`) yang gagal di setup Docker+Windows ini.
+Ini otomatis menambahkan `enabled: hasHydrated && !!token` — query tidak akan
+dieksekusi sebelum Zustand selesai hydrate dari localStorage.
 
-Plugin yang harus ada di `plugins: []`:
-```js
-import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
-// ...
-plugins: [
-    laravel({ input: [...], refresh: true, fonts: [...] }),
-    react(),
-    tailwindcss(),
-],
+---
+
+## Routing
+
+```
+/                   → redirect /dashboard
+/login              → GuestRoute → AuthLayout → LoginPage
+/dashboard          → ProtectedRoute → AppLayout → DashboardPage
+/monitoring         → ProtectedRoute → AppLayout → MonitoringPage
+/customers          → ProtectedRoute → AppLayout → CustomersPage (placeholder)
+/routers            → ProtectedRoute → AppLayout → RoutersPage (placeholder)
+/packages           → ProtectedRoute → AppLayout → ComingSoonPage
+/billing/*          → ProtectedRoute → AppLayout → ComingSoonPage
+/tickets            → ProtectedRoute → AppLayout → ComingSoonPage
+/assets             → ProtectedRoute → AppLayout → ComingSoonPage
+/devices            → ProtectedRoute → AppLayout → ComingSoonPage
+/settings           → ProtectedRoute → AppLayout → ComingSoonPage
+*                   → NotFoundPage
 ```
 
-## 5. Halaman yang Sudah Ada
+> **Penting**: jangan pakai `<a href>` untuk navigasi internal — pakai `<Link to>` dari react-router.
+> `<a href>` menyebabkan full page reload yang menghilangkan React state.
 
-- ✅ `Pages/Welcome.jsx` — halaman percobaan, cuma nampilin teks statis
-  "Halo dari React + Inertia". Route: `routes/web.php` → `GET /` →
-  `Inertia::render('Welcome')`. **Ini placeholder, ganti/hapus nanti**
-  begitu ada halaman React sungguhan yang mau dibangun.
+---
 
-## 6. Belum Dikerjakan (Frontend)
+## WebSocket (Monitoring)
 
-- Belum ada halaman React fungsional sama sekali selain percobaan
-- Belum install `shadcn/ui`
-- Belum ada layout/komponen shared (Navbar, Sidebar, dll) untuk halaman
-  React — kalau mau bikin portal pelanggan, perlu dirancang dulu
-- Belum ada state management pattern yang disepakati (React Context vs
-  library lain) — untuk skala project ini kemungkinan React Context/hooks
-  bawaan sudah cukup, belum perlu Redux/Zustand
-- Belum ada konsistensi desain eksplisit antara tema Filament (Amber,
-  dark mode default) dengan halaman React — kalau bikin portal pelanggan,
-  pertimbangkan pakai warna Amber juga di Tailwind config biar brand
-  konsisten
+```
+MonitoringPage
+  → useTrafficSocket({ routerIds: [1, 2, ...] })
+    → TrafficSocket.connect() → ws://localhost:8082/ws
+      → onopen: send { type: "subscribe", router_ids: [...] }
+      → onmessage: parse RouterSnapshot
+        → setData(Map<routerId, { latest, history[60] }>)
+          → RouterCard re-render → TrafficChart update
+```
 
-## 7. Cara Kerja Development Sehari-hari
+**TrafficSocket** reconnect: exponential backoff 2s → 3s → 4.5s → max 30s.
 
-Container `node` menjalankan `npm run dev -- --host` terus-menerus
-(auto-restart tiap `docker compose up -d`). Tidak perlu manual jalankan
-`npm run dev` — edit file `.jsx` langsung ter-hot-reload di browser.
+**history**: simpan max 60 snapshot per router = 5 menit data (interval 5 detik).
 
-**Catatan multi-komputer**: `node_modules` hidup di named Docker volume
-(`node_modules_data`), jadi otomatis kosong tiap pindah komputer. Perlu
-`docker compose exec node npm install` ulang setiap setup di komputer baru.
+---
 
-Untuk install package React baru:
+## Halaman Selesai vs Placeholder
+
+| Route | Komponen | Status |
+|---|---|---|
+| `/login` | LoginPage | ✅ Lengkap |
+| `/dashboard` | DashboardPage | ✅ Stat cards |
+| `/monitoring` | MonitoringPage | ✅ Realtime chart |
+| `*` | NotFoundPage | ✅ |
+| `/customers` | CustomersPage | 🔲 Placeholder kosong |
+| `/routers` | RoutersPage | 🔲 Placeholder kosong |
+| semua lainnya | ComingSoonPage | 🔲 Statis "coming soon" |
+
+---
+
+## Build & Dev
+
 ```bash
-docker compose exec node npm install <package>
+# Dev — dari host (node container tidak punya internet)
+cd frontend/admin
+npm run dev         # http://localhost:5173
+
+# Production build
+npm run build       # output: dist/
 ```
 
-Untuk build production (belum pernah dilakukan di project ini):
-```bash
-docker compose exec node npm run build
+Vite proxy (vite.config.ts):
+```ts
+proxy: { '/api': { target: 'http://localhost:8085' } }
 ```
+
+Manual chunks (untuk cache efficiency):
+- `echarts` chunk ~1MB — normal, cached setelah load pertama
+- `react-vendor`, `query` chunk terpisah
+
+---
+
+## CSS / Theming
+
+Tailwind v3 dengan CSS variables Shadcn di `src/index.css`:
+- `--background/--foreground` → area konten (putih)
+- `--sidebar-background` → sidebar (dark navy `hsl(224 71.4% 4.1%)`)
+
+`cn()` helper: `clsx` + `tailwind-merge` untuk conditional class merging.
+
+---
+
+## Catatan Penting
+
+- Install package baru: `cd frontend/admin && npm install <pkg>` dari **host**, bukan container
+- `resources/js/` sudah tidak dipakai — semua frontend di `frontend/admin/`
+- Jangan commit `node_modules/` dan `dist/` — sudah ada di `.gitignore`
+- `frontend/admin/.env.development` dan `.env.production` **ikut di-commit** (tidak ada secret, hanya VITE_WS_URL)

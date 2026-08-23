@@ -1,0 +1,310 @@
+# ══════════════════════════════════════════════════════════════════
+# docker-compose.swarm.yml — Bangucup ISP Management
+# Deploy: docker stack deploy -c docker-compose.swarm.yml bangucup
+#
+# CATATAN:
+# - env_file TIDAK didukung docker stack deploy. Semua variable
+#   ditulis eksplisit di sini dan disubstitusi dari file .env
+#   di folder yang sama saat menjalankan docker stack deploy.
+# - Volume 'bangucup_storage' dan 'bangucup_public' pakai driver
+#   local — aman selama semua service di-constraint ke worker node
+#   yang sama. Kalau scale ke multi-node, ganti ke NFS/Ceph dan
+#   hapus placement constraint.
+# - bangucup_app meng-copy public/ ke shared volume tiap start,
+#   termasuk storage:link, supaya nginx bisa serve static files.
+# ══════════════════════════════════════════════════════════════════
+
+x-app-env: &app-env
+  APP_NAME:      ${APP_NAME:-Bangucup}
+  APP_ENV:       production
+  APP_KEY:       ${APP_KEY}
+  APP_DEBUG:     "false"
+  APP_URL:       ${APP_URL}
+
+  LOG_CHANNEL:   ${LOG_CHANNEL:-stack}
+  LOG_STACK:     single
+  LOG_LEVEL:     ${LOG_LEVEL:-error}
+
+  DB_CONNECTION: pgsql
+  DB_HOST:       ${DB_HOST:-postgres}
+  DB_PORT:       ${DB_PORT:-5432}
+  DB_DATABASE:   ${DB_DATABASE:-bangucup}
+  DB_USERNAME:   ${DB_USERNAME:-laravel}
+  DB_PASSWORD:   ${DB_PASSWORD}
+
+  REDIS_CLIENT:  predis
+  REDIS_HOST:    ${REDIS_HOST:-redis}
+  REDIS_PORT:    ${REDIS_PORT:-6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-null}
+  REDIS_DB:      ${REDIS_DB:-0}
+  REDIS_CACHE_DB: ${REDIS_CACHE_DB:-1}
+
+  CACHE_STORE:       redis
+  SESSION_DRIVER:    redis
+  SESSION_LIFETIME:  ${SESSION_LIFETIME:-120}
+  QUEUE_CONNECTION:  redis
+  FILESYSTEM_DISK:   local
+  BROADCAST_CONNECTION: log
+
+  MAIL_MAILER:       ${MAIL_MAILER:-log}
+  MAIL_HOST:         ${MAIL_HOST:-127.0.0.1}
+  MAIL_PORT:         ${MAIL_PORT:-587}
+  MAIL_USERNAME:     ${MAIL_USERNAME:-null}
+  MAIL_PASSWORD:     ${MAIL_PASSWORD:-null}
+  MAIL_ENCRYPTION:   ${MAIL_ENCRYPTION:-tls}
+  MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-hello@bangucup.id}
+  MAIL_FROM_NAME:    ${MAIL_FROM_NAME:-Bangucup}
+
+  GENIEACS_NBI_URL:                ${GENIEACS_NBI_URL:-http://genieacs:7557}
+  GENIEACS_ONLINE_THRESHOLD_MINUTES: ${GENIEACS_ONLINE_THRESHOLD_MINUTES:-15}
+
+  MIKROTIK_TIMEOUT:        ${MIKROTIK_TIMEOUT:-5}
+  MIKROTIK_ISOLIR_PROFILE: ${MIKROTIK_ISOLIR_PROFILE:-isolir}
+
+services:
+  # ─── PHP-FPM Laravel App ────────────────────────────────────────
+  bangucup_app:
+    image: iswant/bangucup:${IMAGE_TAG:-v1.0.1}
+    user: "0:0"
+    entrypoint: [""]
+    command: >
+      sh -c "
+        php artisan storage:link --force &&
+        cp -r /var/www/html/public/. /shared-public/ &&
+        chmod -R 755 /shared-public &&
+        php artisan migrate --force --no-interaction &&
+        php artisan config:cache &&
+        php artisan route:cache &&
+        php artisan view:cache &&
+        php-fpm
+      "
+    deploy:
+      replicas: 2
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    volumes:
+      - bangucup_storage:/var/www/html/storage
+      - bangucup_public:/shared-public
+    networks:
+      - bangucup_network
+      - shared_network
+    environment:
+      <<: *app-env
+
+  # ─── Queue Worker ────────────────────────────────────────────────
+  bangucup_queue:
+    image: iswant/bangucup:${IMAGE_TAG:-v1.0.1}
+    entrypoint: [""]
+    command: >
+      php artisan queue:work redis
+        --sleep=3
+        --tries=3
+        --timeout=90
+        --max-jobs=500
+        --max-time=3600
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    volumes:
+      - bangucup_storage:/var/www/html/storage
+    networks:
+      - bangucup_network
+      - shared_network
+    environment:
+      <<: *app-env
+
+  # ─── Scheduler (cron artisan) ────────────────────────────────────
+  # Menjalankan `php artisan schedule:run` tiap menit.
+  # 1 replica saja — double execution kalau > 1.
+  bangucup_scheduler:
+    image: iswant/bangucup:${IMAGE_TAG:-v1.0.1}
+    entrypoint: [""]
+    command: >
+      sh -c "while true; do php artisan schedule:run --no-interaction; sleep 60; done"
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 128M
+        reservations:
+          cpus: "0.05"
+          memory: 64M
+    volumes:
+      - bangucup_storage:/var/www/html/storage
+    networks:
+      - bangucup_network
+      - shared_network
+    environment:
+      <<: *app-env
+
+  # ─── Nginx Web Server ────────────────────────────────────────────
+  bangucup_nginx:
+    image: nginx:1.27-alpine
+    deploy:
+      replicas: 2
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    ports:
+      - target: 80
+        published: ${NGINX_PORT:-8085}
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - ./docker/nginx/default.swarm.conf:/etc/nginx/conf.d/default.conf:ro
+      - bangucup_public:/var/www/html/public:ro
+      - bangucup_storage:/var/www/html/storage:ro
+    networks:
+      - bangucup_network
+      - shared_network
+    environment:
+      <<: *app-env
+
+volumes:
+  bangucup_storage:
+    name: bangucup_storage
+    driver: local
+    # NOTE: local driver aman selama semua service di 1 worker node.
+    # Kalau scale multi-node, ganti ke driver NFS:
+    #   driver_opts:
+    #     type: nfs
+    #     o: "addr=<NFS_HOST>,rw,nfsvers=4"
+    #     device: ":/exports/bangucup/storage"
+
+  bangucup_public:
+    name: bangucup_public
+    driver: local
+    # Volume ini di-share antara bangucup_app dan bangucup_nginx.
+    # bangucup_app meng-copy isi public/ ke sini tiap start, termasuk
+    # symlink public/storage hasil `php artisan storage:link`.
+
+  # ─── MikroTik Collector ──────────────────────────────────────────
+  bangucup_collector:
+    image: iswant/bangucup-collector:${IMAGE_TAG:-latest}
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: any
+        delay: 10s
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+    networks:
+      - bangucup_network
+      - shared_network
+    environment:
+      REDIS_ADDR:        redis:6379
+      REDIS_PASSWORD:    ${REDIS_PASSWORD:-}
+      REDIS_DB:          ${REDIS_DB:-0}
+      LARAVEL_API_URL:   http://bangucup_nginx/api
+      LARAVEL_API_TOKEN: ${COLLECTOR_API_TOKEN}
+      POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-5}
+
+  # ─── Realtime Gateway (WebSocket) ────────────────────────────────
+  bangucup_gateway:
+    image: iswant/bangucup-gateway:${IMAGE_TAG:-latest}
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.1"
+          memory: 64M
+        reservations:
+          cpus: "0.05"
+          memory: 32M
+    ports:
+      - target: 8081
+        published: 8081
+        protocol: tcp
+        mode: ingress
+    networks:
+      - bangucup_network
+      - shared_network
+    environment:
+      LISTEN_ADDR:    :8081
+      REDIS_ADDR:     redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB:       ${REDIS_DB:-0}
+      ALLOWED_ORIGIN: "*"
+
+networks:
+  bangucup_network:
+    name: bangucup_network
+    driver: overlay
+    attachable: true
+
+  shared_network:
+    name: shared_network
+    driver: overlay
+    attachable: true
+    external: true
+    # shared_network adalah overlay network yang sudah ada di server
+    # (tempat postgres, redis, dll berjalan).
+    # Buat jika belum ada: docker network create -d overlay --attachable shared_network

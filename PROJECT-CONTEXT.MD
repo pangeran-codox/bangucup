@@ -1,396 +1,408 @@
-# Bangucup — Sistem Monitoring & Billing RT/RW Net
+# Bangucup — Project Context
 
-> Dokumen ini adalah context lengkap project untuk memudahkan sesi Claude
-> berikutnya melanjutkan development tanpa perlu tanya ulang dari nol.
-> Update dokumen ini setiap kali ada perubahan arsitektur penting.
->
-> **Baca juga**: `FILAMENT-RESOURCES.md` (katalog lengkap semua Filament
-> Resource + gotcha namespace) dan `FRONTEND-ARCHITECTURE.md` (khusus
-> React/Inertia).
+> Baca ini PERTAMA sebelum mengerjakan apapun.
+> Update file ini setiap ada perubahan arsitektur penting.
 
-## 1. Ringkasan Project
+---
 
-Aplikasi web all-in-one untuk pemilik bisnis RT/RW net (ISP kecil rumahan),
-mencakup:
-- Monitoring perangkat pelanggan (ONU/ONT) via TR-069, terintegrasi dengan
-  **GenieACS** (dijalankan terpisah, belum di-setup di project ini)
-- Sistem billing bulanan (postpaid)
-- Isolir otomatis pelanggan menunggak via **Mikrotik API** (PPPoE)
-- Integrasi payment gateway (Midtrans/Xendit — belum di-setup)
-- Admin panel internal (Filament) + kemungkinan portal pelanggan (React/Inertia)
+## 1. Ringkasan
 
-## 2. Tech Stack
+Aplikasi web all-in-one untuk ISP kecil (RT/RW Net):
+- **Billing** — invoice, pembayaran, isolir otomatis
+- **Monitoring** — traffic MikroTik realtime via WebSocket
+- **Device management** — ONU/ONT via TR-069 (GenieACS)
+- **Operasional** — tiket, aset, voucher, ODP
 
-| Layer | Pilihan | Alasan |
+---
+
+## 2. Arsitektur
+
+```
+React + TypeScript (frontend/admin/)
+    │
+    ├── REST API ──────►  Laravel 13 (PHP 8.4-fpm)
+    │                         │
+    │                     PostgreSQL 16 + Redis 7
+    │
+    └── WebSocket ────►  realtime-gateway (Go 1.23)
+                              │
+                          Redis Pub/Sub
+                              ▲
+                          mikrotik-collector (Go 1.23)
+                              │
+                        MikroTik RouterOS API
+```
+
+> Browser tidak pernah poll MikroTik langsung.
+> Satu collector untuk semua router → broadcast ke semua browser via WebSocket.
+
+---
+
+## 3. Tech Stack
+
+| Layer | Teknologi | Versi |
 |---|---|---|
-| Backend | Laravel 13 (PHP 8.4) | Ekosistem RT/RW net Indonesia paling matang di Laravel |
-| Database | PostgreSQL 16 | JSONB untuk audit payload, constraint lebih ketat |
-| Cache/Queue/Session | Redis (pakai `predis`, bukan ext-redis) | Sudah tersedia di infra existing |
-| Admin panel | Filament v5.7.3 | Filament + Livewire, CRUD generator |
-| Frontend custom | Inertia.js + React 18 + Tailwind v4 | Untuk halaman yang butuh UI custom (bukan di panel admin) |
-| Role & Permission | spatie/laravel-permission v8 | Standar de-facto Laravel |
-| Container | Docker (dev only, belum ada setup production) | PHP lokal user versi lama, konflik dengan requirement Laravel 13 |
+| Frontend | React + TypeScript + Vite | React 19, Vite 6 |
+| UI | Shadcn/ui + Radix UI + Tailwind CSS | Tailwind 3 |
+| Data fetching | TanStack Query | v5 |
+| State | Zustand + persist | v5 |
+| Charts | ECharts (echarts-for-react) | v5 |
+| Routing | React Router | v7 |
+| HTTP client | Axios | v1.9 |
+| Backend | Laravel | 13 (PHP 8.4) |
+| Auth API | Laravel Sanctum | v4 |
+| Role/Permission | spatie/laravel-permission | v8 |
+| MikroTik | evilfreelancer/routeros-api-php | v1.7 |
+| Database | PostgreSQL | 16 |
+| Cache/Queue | Redis (predis) | 7 |
+| Go Collector | Go + go-routeros + go-redis | 1.23 |
+| Go Gateway | Go + coder/websocket + go-redis | 1.23 |
 
-## 3. Development Lintas Komputer (PENTING)
+> **Filament dihapus** Agustus 2026. Tidak ada `app/Filament/` atau `/admin` panel.
 
-User mengerjakan project ini dari **lebih dari satu komputer** (kode di-sync
-lewat GitHub: `github.com/pangeran-codox/bangucup`). Beberapa hal WAJIB
-diingat setiap kali membantu setup di komputer "baru":
+---
 
-### Yang IKUT lewat Git
-- Semua source code (`app/`, `resources/`, `routes/`, dll)
-- `docker-compose.yml`, `docker/` (Dockerfile, nginx config)
-- File migration, seeder
-- `schema.sql`, file dokumentasi `.md`
+## 4. Struktur Repository
 
-### Yang TIDAK IKUT lewat Git (harus di-setup ulang manual di tiap komputer)
-- `.env` — di-gitignore (isi kredensial). User belum pernah bikin
-  `.env.example`, jadi kalau pindah komputer, `.env` harus dibikin dari
-  nol. Isi lengkap template ada di riwayat percakapan / minta user share
-  ulang `.env` lama sebagai referensi kalau ada.
-- `vendor/` dan `node_modules/` — hidup di **named Docker volume**
-  (`vendor_data`, `node_modules_data`), bukan bind mount, jadi otomatis
-  kosong di komputer baru. Perlu `composer install` dan `npm install`
-  ulang di dalam container.
-- **Isi database** — tiap komputer punya instance Postgres/Redis
-  masing-masing (lihat bagian 4). Data yang diinput di komputer A TIDAK
-  otomatis muncul di komputer B. Kalau butuh sinkron data, perlu
-  `pg_dump`/`pg_restore` manual (belum pernah dilakukan, belum ada
-  panduannya).
-
-### Checklist Setup di Komputer "Baru"
-1. `git clone` (atau `git pull` kalau folder sudah ada — hati-hati error
-   Windows "Unlink of file ... failed", biasanya karena antivirus/VS Code
-   mengunci file `.git`; kalau retry berkali-kali gagal, lebih cepat hapus
-   folder dan clone ulang dari nol)
-2. Cek nama Docker network yang dipakai Postgres/Redis existing di
-   komputer itu — **JANGAN ASUMSI** namanya `network` seperti komputer
-   sebelumnya, walau kebetulan sering sama:
-   ```bash
-   docker network ls
-   docker inspect postgres --format "{{json .NetworkSettings.Networks}}"
-   ```
-   Sesuaikan `docker-compose.yml` bagian `networks:` kalau beda.
-3. `docker compose build app`
-4. `docker compose up -d`
-5. `docker compose exec app composer install`
-6. `docker compose exec node npm install`
-7. Buat `.env` manual (lihat isi lengkap di bagian 5)
-8. `docker compose exec app php artisan key:generate`
-9. Cek `docker compose exec app php artisan migrate:status` — kalau
-   tabel belum ada, jalankan `php artisan migrate`. Kalau database belum
-   ada sama sekali, buat dulu lewat Adminer atau `docker exec -it
-   postgres psql`.
-10. `docker compose exec app php artisan make:filament-user` (bikin user
-    admin baru khusus komputer ini)
-11. `docker compose exec app php artisan db:seed --class=RolePermissionSeeder`
-
-## 4. Infrastruktur Docker
-
-### Konteks penting
-User punya **banyak container project lain** yang sudah jalan duluan di
-tiap komputer yang dipakai (eduzone, lab-management, maikel-bot,
-absensi-gateway, dll — nama bervariasi tiap komputer). Postgres dan Redis
-**tidak dibuat baru** untuk project ini — numpang ke instance existing di
-komputer yang sedang dipakai:
-
-- Container `postgres` (image `postgres:16-alpine`) — port host `5432`
-- Container `redis` (image `redis:7-alpine`) — port host `6379`
-- Container `adminer` — port host `8081` (untuk lihat isi database)
-- Network Docker yang menghubungkan semuanya: biasanya namanya
-  **`network`** (nama literal), tapi SELALU verifikasi ulang di komputer
-  baru (lihat bagian 3). Salah satu komputer user bahkan pakai **Docker
-  Swarm mode** (ada network tipe `overlay`) berdampingan dengan network
-  `bridge` biasa — pastikan connect ke yang `bridge`/lokal, bukan overlay.
-
-### Struktur folder project
 ```
-<root project>\
-├── docker\
-│   ├── nginx\default.conf
-│   └── php\
-│       ├── Dockerfile
-│       └── php.ini
-├── docker-compose.yml
-├── .dockerignore
-├── (source code Laravel standar)
+bangucup/
+├── frontend/admin/              ← React SPA
+│   ├── src/
+│   │   ├── app/                 ← router.tsx, queryClient.ts, ProtectedRoute.tsx
+│   │   ├── components/
+│   │   │   ├── ui/              ← Shadcn: Button, Input, Card, Label, dll
+│   │   │   ├── charts/          ← TrafficChart (ECharts RX/TX)
+│   │   │   └── layout/          ← Sidebar, Topbar, AppLayout, AuthLayout
+│   │   ├── features/
+│   │   │   ├── auth/            ← LoginPage, NotFoundPage
+│   │   │   ├── dashboard/       ← DashboardPage (stat cards)
+│   │   │   ├── monitoring/      ← MonitoringPage (WebSocket + charts)
+│   │   │   ├── customers/       ← placeholder
+│   │   │   ├── routers/         ← placeholder
+│   │   │   └── shared/          ← ComingSoonPage
+│   │   ├── hooks/
+│   │   │   ├── useAuthQuery.ts  ← wrapper useQuery yg auto-disabled kalau belum login
+│   │   │   └── useTrafficSocket.ts ← WebSocket hook
+│   │   ├── services/
+│   │   │   ├── api/             ← client.ts (axios), auth.ts
+│   │   │   └── websocket/       ← trafficSocket.ts
+│   │   ├── stores/              ← authStore.ts (Zustand + persist)
+│   │   ├── types/               ← index.ts, realtime.ts
+│   │   └── lib/                 ← utils.ts (cn, formatBps, dll)
+│   ├── .env.development         ← VITE_WS_URL=ws://localhost:8082/ws
+│   ├── .env.production          ← VITE_WS_URL=ws://domain.com:8081/ws
+│   └── package.json
+│
+├── services/
+│   ├── mikrotik-collector/      ← Go: poll MikroTik → Redis
+│   │   ├── internal/collector/  ← poll loop concurrent
+│   │   ├── internal/mikrotik/   ← RouterOS API client
+│   │   ├── internal/config/
+│   │   ├── main.go
+│   │   ├── go.mod + go.sum
+│   │   └── Dockerfile
+│   └── realtime-gateway/        ← Go: Redis Pub/Sub → WebSocket
+│       ├── internal/gateway/    ← Hub, WebSocket handler, client filter
+│       ├── internal/config/
+│       ├── main.go
+│       ├── go.mod + go.sum
+│       └── Dockerfile
+│
+├── app/
+│   ├── Http/
+│   │   ├── Controllers/Api/     ← 15 controller (ApiController base + 14 resource)
+│   │   ├── Resources/           ← 12 API Resources
+│   │   └── Requests/            ← Form Request validation per resource
+│   ├── Models/                  ← 17 model
+│   └── Services/                ← MikrotikService, GenieAcsService
+│
+├── routes/
+│   ├── api.php                  ← 74 REST endpoints
+│   └── web.php                  ← GET / → JSON info app
+│
+├── docker-compose.yml           ← Dev: app, nginx, node, collector, gateway
+├── docker-compose.swarm.yml     ← Prod: full stack Docker Swarm
+├── docker/
+│   ├── php/Dockerfile           ← Dev PHP-FPM
+│   ├── php/Dockerfile.prod      ← Prod multi-stage build
+│   └── nginx/
+│       ├── default.conf         ← Dev
+│       └── default.swarm.conf   ← Prod
+└── .env.production              ← Template .env production (tidak di-commit)
 ```
 
-### Container project ini
-| Service | Image | Nama container | Port host | Catatan |
-|---|---|---|---|---|
-| `app` | custom (`docker/php/Dockerfile`) | `bangucup-app` | — (internal 9000) | PHP-FPM 8.4 |
-| `nginx` | `nginx:stable-alpine` | `bangucup-nginx` | `8084` | Web server |
-| `node` | `node:22-alpine` | `bangucup-node` | `5173` | Vite dev server |
+---
 
-Semua join ke network external (`network`), supaya bisa akses `postgres`
-dan `redis` existing lewat DNS Docker (`DB_HOST=postgres`,
-`REDIS_HOST=redis`). `vendor` dan `node_modules` pakai **named volume**
-terpisah (`vendor_data`, `node_modules_data`) demi performa (lihat isu #8
-di bawah).
+## 5. Docker Dev
 
-### Isu yang pernah ditemukan & fix-nya (penting, jangan diulang)
+### Container
 
-1. **PHP lokal Windows versi lama**, Laravel 13 butuh ^8.3 → solusi: semua
-   development dilakukan di dalam container, bukan pakai PHP lokal Laragon.
+| Container | Image | Port host | Fungsi |
+|---|---|---|---|
+| `bangucup-app` | custom PHP 8.4 FPM | — (9000 internal) | Laravel API |
+| `bangucup-nginx` | nginx:stable-alpine | **8085** | Web server + proxy ke PHP-FPM |
+| `bangucup-node` | node:22-alpine | — | Node runtime (tidak aktif dev) |
+| `bangucup-collector` | bangucup-collector:dev | — | Go: poll MikroTik → Redis |
+| `bangucup-gateway` | bangucup-gateway:dev | **8082** | Go: Redis → WebSocket |
 
-2. **`ext-intl` belum ada** (dibutuhkan Filament) → di-fix di
-   `docker/php/Dockerfile` dengan menambah `libicu-dev` +
-   `docker-php-ext-configure intl` + `intl` di `docker-php-ext-install`.
+> Port 8081 dipakai Adminer di setup lokal ini → gateway dev pakai 8082.
+> Di production Swarm, gateway pakai port 8081.
 
-3. **Build gagal "invalid file request node_modules/.bin/..."** → karena
-   `COPY . .` di Dockerfile ikut nyalin `node_modules` (symlink bikin
-   Docker Desktop Windows crash). Fix: file `.dockerignore` di root project
-   yang exclude `node_modules`, `vendor`, `.git`, dll.
+Semua container join network `network` (Docker external network — infra shared).
 
-4. **Nginx "host not found in upstream 'app'" saat startup** (race
-   condition, container `app` belum siap pas nginx resolve DNS) → fix
-   permanen di `docker/nginx/default.conf`:
-   ```nginx
-   location ~ \.php$ {
-       resolver 127.0.0.11 valid=10s;
-       set $upstream_app app:9000;
-       fastcgi_pass $upstream_app;
-       ...
-   }
-   ```
-   Ditambah `restart: unless-stopped` di semua service docker-compose.
-
-5. **Vite HMR gagal, browser connect ke `[::1]:5173` (IPv6) bukan
-   `localhost`** → fix di `vite.config.js`:
-   ```js
-   server: {
-       host: '0.0.0.0',
-       port: 5173,
-       strictPort: true,
-       hmr: { host: 'localhost' },
-   }
-   ```
-
-6. **`storage/framework/views` permission denied (`tempnam()` error)** →
-   folder di-mount dari Windows dengan owner `root`, proses PHP jalan
-   sebagai `www-data`. Fix sementara: `chmod -R 777 storage bootstrap/cache`.
-   *(Belum ada fix permanen di Dockerfile — masih technical debt)*
-
-7. **`Class "Redis" not found`** → Laravel default pakai ext-redis (PECL),
-   tidak diinstall di image. Fix: pakai `predis/predis` (pure PHP) +
-   `.env`: `REDIS_CLIENT=predis`.
-
-8. **Semua terasa lambat** (buka `/admin` berat) → root cause: `vendor/`
-   dan `node_modules/` di-bind-mount dari Windows, I/O lintas
-   Windows↔WSL2 lambat untuk ribuan file kecil. Fix: named volume
-   terpisah khusus untuk `vendor` dan `node_modules` (hidup sepenuhnya
-   di Linux, tidak nyeberang ke Windows). Setelah pindah ke pola ini,
-   harus jalankan ulang `composer install`/`npm install` di container
-   tiap kali volume kosong (termasuk di komputer baru).
-
-9. **`@vitejs/plugin-react can't detect preamble`** → lupa tambah
-   `@viteReactRefresh` sebelum `@vite(...)` di `resources/views/app.blade.php`.
-
-10. **Git Windows: "Unlink of file '.git/objects/pack/...' failed"** saat
-    `git pull`/`git clone` → biasanya antivirus atau VS Code (Git
-    extension) sedang mengunci file. Coba retry 2-3 kali (`y`); kalau
-    tetap gagal, lebih cepat `rmdir /s /q <folder>` lalu `git clone` ulang
-    dari nol daripada troubleshoot lock file.
-
-11. **`TypeError: Argument #1 ($get) must be of type Filament\Forms\Get,
-    Filament\Schemas\Components\Utilities\Get given`** → di Filament v5
-    dengan arsitektur Schema terpisah ini, closure reaktif (`visible(fn
-    (Get $get) => ...)`, `modifyQueryUsing`) HARUS import `Get` dari
-    `Filament\Schemas\Components\Utilities\Get`, BUKAN `Filament\Forms\Get`.
-    Ini sama kasusnya dengan `Grid`/`Section` yang juga pindah namespace
-    ke `Filament\Schemas\Components\*`. **Base rule**: field/komponen
-    (`TextInput`, `Select`, `Textarea`, dll) tetap di `Filament\Forms\Components\*`,
-    tapi utilitas untuk *struktur layout* dan *reactive closures*
-    (`Section`, `Grid`, `Get`, `Set`) pindah ke `Filament\Schemas\Components\*`.
-
-### Cara menjalankan command (SELALU lewat container, bukan PHP lokal)
+### Build Go images (wajib sekali sebelum `docker compose up`)
 ```bash
-docker compose exec app php artisan <command>
-docker compose exec app composer <command>
-docker compose exec node npm <command>
+docker build -t bangucup-collector:dev ./services/mikrotik-collector
+docker build -t bangucup-gateway:dev ./services/realtime-gateway
 ```
 
-## 5. Environment Variables Penting (`.env`)
+### Start
+```bash
+docker compose up -d
+```
 
-Belum ada `.env.example` di repo — kalau setup di komputer baru, buat
-manual dengan isi ini (ganti kredensial DB sesuai komputer):
+---
+
+## 6. Environment Variables (.env)
 
 ```env
 APP_NAME=Bangucup
 APP_ENV=local
-APP_KEY=
+APP_KEY=          ← php artisan key:generate
 APP_DEBUG=true
-APP_URL=http://localhost:8084
-
-APP_LOCALE=id
-APP_FALLBACK_LOCALE=en
-APP_FAKER_LOCALE=id_ID
+APP_URL=http://bangucup
 
 DB_CONNECTION=pgsql
 DB_HOST=postgres
 DB_PORT=5432
 DB_DATABASE=bangucup
-DB_USERNAME=<ikut kredensial postgres komputer ini>
-DB_PASSWORD=<ikut kredensial postgres komputer ini>
-
-SESSION_DRIVER=redis
-CACHE_STORE=redis
-QUEUE_CONNECTION=redis
+DB_USERNAME=laravel
+DB_PASSWORD=secret123
 
 REDIS_CLIENT=predis
 REDIS_HOST=redis
 REDIS_PORT=6379
-REDIS_PREFIX=bangucup_database_
+REDIS_PASSWORD=null
+REDIS_DB=0
+REDIS_CACHE_DB=1
 
-MAIL_MAILER=log
+CACHE_STORE=redis
+QUEUE_CONNECTION=redis
+SESSION_DRIVER=redis
+
+GENIEACS_NBI_URL=http://genieacs:7557
+GENIEACS_ONLINE_THRESHOLD_MINUTES=15
+
+MIKROTIK_TIMEOUT=5
+MIKROTIK_ISOLIR_PROFILE=isolir
+
+# Generate: docker exec bangucup-app php artisan tinker \
+#   --execute="echo App\Models\User::where('email','admin@bangucup.id')->first()->createToken('collector')->plainTextToken;"
+COLLECTOR_API_TOKEN=
+
+# Untuk AdminSeeder (jalankan sekali saat setup)
+ADMIN_EMAIL=admin@bangucup.id
+ADMIN_PASSWORD=Admin1234!
+ADMIN_NAME=Administrator
 ```
 
-`REDIS_PREFIX` wajib di-set unik karena Redis dipakai bareng project lain
-di komputer yang sama — tanpa prefix ini, cache/session/queue bisa bentrok.
+---
 
-## 6. Database
+## 7. API Endpoints (74 total)
 
-Schema lengkap ada di file `schema.sql` (PostgreSQL) dan versi Laravel
-migration (14 file custom, timestamp `2026_07_28_100000` s/d `100013`,
-plus 5 tabel dari `spatie/laravel-permission` timestamp `2026_07_29_082029`).
+Prefix: `/api/` — semua protected kecuali login.
 
-### Daftar tabel (urutan sesuai dependency FK)
-1. `odps` — titik distribusi jaringan (ODP), `total_ports`
-2. `customers` — data pelanggan, status: `active|isolir|inactive|pending`
-3. `packages` — paket internet (kecepatan, harga, nama profile Mikrotik)
-4. `subscriptions` — langganan aktif (FK: customer, package, odp),
-   `pppoe_username`, `billing_due_date`
-5. `devices` — cache status ONU dari GenieACS (bukan sumber kebenaran utama)
-6. `vouchers` — diskon/promo
-7. `invoices` — tagihan (`type`: installation/monthly/other), nomor
-   invoice auto-generate format `INV-YYYYMM-XXXX`
-8. `payments` — riwayat pembayaran gateway, `raw_payload` JSONB
-9. `isolir_logs` — audit trail isolir/restore
-10. `notification_logs` — riwayat notif WA/email
-11. `tickets` — komplain pelanggan
-12. `ticket_replies` — histori percakapan tiket
-13. `assets` — inventori alat (ONU, kabel, dll), `stock_qty` di-auto-update
-    lewat `AssetMovement`
-14. `asset_movements` — log keluar-masuk stok
-15-19. Tabel `roles`, `permissions`, `model_has_roles`,
-    `model_has_permissions`, `role_has_permissions` (dari Spatie)
+```
+POST   /api/auth/login            ← publik
+POST   /api/auth/logout           ← auth:sanctum
+GET    /api/auth/me
 
-### Prinsip desain penting
-- **Postpaid**, bukan prepaid — invoice berbasis `due_date`, bukan expired
-  balance
-- Enum pakai `CHECK` constraint (bukan native Postgres `ENUM` type) biar
-  gampang di-`ALTER` nanti
-- `devices` tabel cuma cache, data real-time tetap query ke GenieACS API
-- `odps.total_ports` dibandingkan secara dinamis (query COUNT), bukan
-  kolom `used_ports` statis — lihat method `usedPortsCount()` di model `Odp`
-- `assets.stock_qty` diupdate otomatis lewat event `booted()` di model
-  `AssetMovement`, jangan diedit manual dobel
+GET    /api/dashboard/stats
 
-## 7. Role & Permission (Spatie)
+GET/POST              /api/customers
+GET/PUT/DELETE        /api/customers/{id}
 
-Seeder: `database/seeders/RolePermissionSeeder.php` — WAJIB dipanggil dari
-`DatabaseSeeder.php`. **Harus dijalankan ulang di tiap komputer baru**
-(`php artisan db:seed --class=RolePermissionSeeder`) karena data role/
-permission tidak ikut lewat Git.
+GET/POST              /api/packages
+GET/PUT/DELETE        /api/packages/{id}
 
-### 4 Role
+GET/POST              /api/subscriptions
+GET/PUT/DELETE        /api/subscriptions/{id}
+POST                  /api/subscriptions/{id}/isolir
+POST                  /api/subscriptions/{id}/restore
+
+GET/POST              /api/invoices
+GET/PUT/DELETE        /api/invoices/{id}
+POST                  /api/invoices/{id}/mark-paid
+
+GET/POST              /api/payments
+GET                   /api/payments/{id}
+
+GET/POST/PUT/DELETE   /api/routers/{id}
+POST                  /api/routers/{id}/test-connection
+GET                   /api/routers/{id}/traffic
+
+GET/POST/PUT/DELETE   /api/tickets/{id}
+POST                  /api/tickets/{id}/replies
+
+GET/POST/PUT/DELETE   /api/assets/{id}
+GET/POST              /api/assets/{id}/movements
+
+GET/POST/PUT/DELETE   /api/odps/{id}
+GET/POST/PUT/DELETE   /api/vouchers/{id}
+GET/GET               /api/devices + /api/devices/{id}
+POST                  /api/devices/{id}/refresh
+GET/POST/PUT/DELETE   /api/users/{id}
+POST                  /api/users/{id}/roles
+```
+
+Response format:
+```json
+{ "data": { ... }, "message": "OK" }
+```
+
+---
+
+## 8. Database (17 Model)
+
+| Model | Tabel | Catatan |
+|---|---|---|
+| User | `users` | HasApiTokens + HasRoles |
+| Customer | `customers` | status: active/isolir/inactive/pending |
+| Package | `packages` | speed_mbps, price, mikrotik_profile_name |
+| Subscription | `subscriptions` | pppoe_username unique, status: active/isolir/terminated |
+| Odp | `odps` | usedPortsCount(), availablePortsCount() |
+| Invoice | `invoices` | **auto-generate invoice_number** di booted() |
+| Payment | `payments` | raw_payload JSON |
+| Voucher | `vouchers` | type: percentage/fixed |
+| Device | `devices` | Cache ONU dari GenieACS |
+| MikrotikRouter | `mikrotik_routers` | password di-cast `encrypted` |
+| IsolirLog | `isolir_logs` | audit trail isolir/restore |
+| Ticket | `tickets` | |
+| TicketReply | `ticket_replies` | |
+| Asset | `assets` | |
+| AssetMovement | `asset_movements` | **auto-update stock_qty** di booted() |
+| NotificationLog | `notification_logs` | |
+| CableRoute | `cable_routes` | path di-cast `array` |
+
+---
+
+## 9. Roles & Permission
+
 | Role | Akses |
 |---|---|
-| `super_admin` | Semua permission (48 total), termasuk kelola roles/users |
-| `admin` | Semua operasional, TIDAK bisa kelola roles/users |
-| `staff` | CRUD (tanpa delete) untuk customers, subscriptions, invoices, payments, tickets, vouchers |
-| `teknisi` | View+update tickets, devices, assets; view-only odps & subscriptions |
+| `super_admin` | Semua |
+| `admin` | Semua kecuali kelola roles |
+| `staff` | CRUD customers, subscriptions, invoices, payments, tickets, vouchers |
+| `teknisi` | View+update tickets, devices, assets; view odps, subscriptions |
 
-Format nama permission: `{action}_{module}`, contoh `view_customers`,
-`create_invoices`. Model `User` sudah pakai trait
-`Spatie\Permission\Traits\HasRoles`. User pertama di tiap komputer
-(dibuat via `make:filament-user`) otomatis di-assign `super_admin` oleh
-seeder.
+---
 
-**Belum diterapkan**: seeder ini baru generate role/permission-nya saja.
-Belum ada gating aktual di Filament Resource (misal `canViewAny()` cek
-permission). Ini technical debt untuk sesi berikutnya.
+## 10. Go Services
 
-## 8. Filament Panel Config
+### mikrotik-collector
+- Poll semua router aktif tiap `POLL_INTERVAL_SEC` detik (default 5)
+- Fetch daftar router dari `GET /api/routers` (butuh `LARAVEL_API_TOKEN`)
+- Tulis ke Redis:
+  - `bangucup:router:{id}:status` (TTL 15s)
+  - `bangucup:router:{id}:traffic` (TTL 30s)
+  - Publish ke channel `bangucup:traffic`
 
-File: `app/Providers/Filament/AdminPanelProvider.php`
-- Warna primary: `Color::Amber`
-- Dark mode default: `->defaultThemeMode(ThemeMode::Dark)`
-- Brand name: `->brandName('Bangucup')`
-- Panel ID: `admin`, path: `/admin`
+### realtime-gateway
+- Subscribe Redis channel `bangucup:traffic`
+- Broadcast payload ke browser via WebSocket
+- Endpoint: `ws://host:8082/ws` (dev) / `ws://host:8081/ws` (prod)
+- Health: `GET /healthz` → `{"status":"ok"}`
+- Browser bisa kirim filter: `{"type":"subscribe","router_ids":[1,2]}`
 
-## 9. Status Resource (ringkas — detail lengkap di `FILAMENT-RESOURCES.md`)
+---
 
-**Selesai & sudah ditest oleh user:**
-Customer (Pelanggan), Package (Paket), Subscription (Langganan), Odp,
-Invoice (Tagihan), Payment (Pembayaran), Device (Perangkat), Ticket (Tiket)
+## 11. Frontend Auth Flow
 
-**Sudah disiapkan (kode lengkap dibuat), BELUM ditest user:**
-Voucher, Asset, AssetMovement (Pergerakan Aset), IsolirLog (Log Isolir),
-NotificationLog (Log Notifikasi), TicketReply (Balasan Tiket — sengaja
-disembunyikan dari sidebar navigasi)
+```
+Login → POST /api/auth/login → { token, user }
+      → authStore.setAuth(user, token)  ← Zustand persist localStorage
+      → navigate('/dashboard')
 
-**Belum dikerjakan sama sekali:**
-Tidak ada lagi — semua 14 tabel data (di luar tabel Spatie) sudah punya
-resource. Yang tersisa cuma **gating permission** dan **integrasi
-eksternal** (lihat bagian 10).
+Page load:
+  ProtectedRoute → cek _hasHydrated (tunggu Zustand hydrate localStorage)
+                → kalau !isAuthenticated → redirect /login
+                → kalau isAuthenticated → render page
 
-## 10. Yang Belum Dikerjakan Sama Sekali (Roadmap Besar)
+useAuthQuery (wrapper useQuery):
+  → enabled hanya kalau hasHydrated && !!token
+  → mencegah API call sebelum token tersedia
 
-1. **Test & fix bug di 6 resource yang baru disiapkan** (lihat bagian 9)
-   — kemungkinan ada isu namespace `Get` (lihat isu #11) yang belum
-   ketauan di beberapa form baru
-2. **Gating permission di Filament Resource** (pakai role/permission yang
-   sudah di-seed)
-3. **Convert `TicketReply` jadi Relation Manager** di dalam
-   `TicketResource` (sekarang masih resource terpisah yang disembunyikan)
-4. **Integrasi Mikrotik API** (`evilfreelancer/routeros-api-php`) — untuk
-   isolir otomatis via PPPoE profile switching
-5. **Setup GenieACS** (terpisah, kemungkinan docker-compose sendiri) +
-   integrasi NBI API ke Laravel
-6. **Integrasi payment gateway** (Midtrans/Xendit) + webhook handler
-   (nanti `Payment.raw_payload` diisi dari sini)
-7. **Scheduler otomatis**: cek invoice jatuh tempo → trigger isolir; cek
-   pembayaran masuk → buka isolir
-8. **Halaman React/Inertia** untuk portal pelanggan (base project React
-   sudah jalan, tapi baru ada 1 halaman percobaan `Welcome.jsx`)
-9. **Notifikasi WhatsApp** (Fonnte/Wablas API) untuk reminder tagihan
-10. Fix permanen permission `storage/` (masih pakai `chmod 777` manual)
-11. Bikin `.env.example` supaya setup di komputer baru lebih gampang
-    (sekarang harus rekonstruksi manual tiap kali)
-12. Pertimbangkan cara sinkron data antar-komputer kalau memang perlu
-    (`pg_dump`/`pg_restore`), atau terima aja tiap komputer punya data
-    percobaan sendiri-sendiri selama masih tahap development
+Axios 401:
+  → kalau _hasHydrated && isAuthenticated → clear auth state
+  → ProtectedRoute otomatis redirect /login
+```
 
-## 11. File Referensi Penting yang Sudah Dibuat
+---
 
-- `schema.sql` — full PostgreSQL schema
-- 14 file migration Laravel custom (`database/migrations/2026_07_28_*`)
-- `RolePermissionSeeder.php`
-- `docker-compose.yml`, `docker/php/Dockerfile`, `docker/nginx/default.conf`,
-  `.dockerignore` — semua sudah di-iterasi berkali-kali, JANGAN dibuat
-  ulang dari nol, cukup dibaca dari project existing user
-- `FILAMENT-RESOURCES.md` — katalog semua Model + Resource yang sudah
-  dibuat, termasuk kode lengkapnya, biar gampang direferensikan kalau
-  perlu bikin resource baru dengan pola yang konsisten
+## 12. Halaman Frontend
 
-## 12. Catatan Gaya Komunikasi dengan User Ini
+| Route | Status | Keterangan |
+|---|---|---|
+| `/login` | ✅ | Form auth, error handling |
+| `/dashboard` | ✅ | Stat cards dari API |
+| `/monitoring` | ✅ | WebSocket + ECharts traffic realtime |
+| `/customers` | 🔲 | Placeholder (coming soon) |
+| `/packages` | 🔲 | Placeholder |
+| `/billing/*` | 🔲 | Placeholder |
+| `/routers` | 🔲 | Placeholder |
+| `/tickets` | 🔲 | Placeholder |
+| `/assets` | 🔲 | Placeholder |
+| `/devices` | 🔲 | Placeholder |
+| `/settings` | 🔲 | Placeholder |
+| `*` | ✅ | 404 page |
 
-- User masih belajar (baru pertama kali setup Docker + Laravel + Filament),
-  jelasin istilah teknis secara singkat tiap kali dipakai pertama kali,
-  tapi sudah lumayan familiar dengan alur kerja dasar sekarang (jalankan
-  command, screenshot error, dll) — gak perlu ulang-ulang basic banget
-- User pakai Windows + Laragon + Docker Desktop, akses command lewat CMD
-  (`c:\laragon\www\bangucup>` atau path serupa), bukan lewat WSL langsung
-- User kerja dari **lebih dari satu komputer** — selalu tanya/cek dulu
-  kalau ada indikasi environment beda dari yang terakhir dibahas
-- Selalu minta user paste isi file dulu sebelum kasih instruksi edit
-  (jangan asumsi struktur file tanpa lihat, karena sering beda dari
-  default akibat versi Laravel/Filament yang lebih baru dari training data)
-- User punya banyak project Docker lain di komputer yang sama — selalu
-  ingatkan soal potensi konflik port/resource/nama network
-- Kalau user minta "siapkan semua sekalian" tanpa mau testing satu-satu
-  dulu, boleh langsung kasih kode final lengkap (model+form+table+resource)
-  tanpa nunggu user paste hasil `--generate` — asal tetap ikuti konvensi
-  namespace yang benar (lihat isu #11) supaya minim bug pas ditest nanti
+---
+
+## 13. Production (Docker Swarm)
+
+Images di Docker Hub:
+- `iswant/bangucup:v1.0.1` — Laravel app
+- `iswant/bangucup-collector:latest` — Go collector (perlu build + push dulu)
+- `iswant/bangucup-gateway:latest` — Go gateway (perlu build + push dulu)
+
+```bash
+# Build dan push Go images
+docker build -t iswant/bangucup-collector:latest ./services/mikrotik-collector
+docker push iswant/bangucup-collector:latest
+
+docker build -t iswant/bangucup-gateway:latest ./services/realtime-gateway
+docker push iswant/bangucup-gateway:latest
+
+# Deploy
+cp .env.production .env   # isi semua variable
+docker network create -d overlay --attachable shared_network
+docker stack deploy -c docker-compose.swarm.yml bangucup
+```
+
+---
+
+## 14. Bug Log
+
+| # | Masalah | Fix |
+|---|---|---|
+| 1 | Nginx "host not found in upstream 'app'" | resolver 127.0.0.11 + set $upstream |
+| 2 | `Class "Redis" not found` | REDIS_CLIENT=predis |
+| 3 | Filament panel cache masih ada setelah hapus Filament | `rm -rf bootstrap/cache/filament && php artisan optimize:clear` |
+| 4 | Vite proxy `http://bangucup-nginx` gagal dari host | Ganti ke `http://localhost:8085` |
+| 5 | Login sukses tapi langsung dilempar ke /login | Zustand hydration race condition — tambah `_hasHydrated` guard |
+| 6 | `useQuery` fetch tanpa token sebelum hydration | Buat `useAuthQuery` wrapper dengan `enabled: hasHydrated && !!token` |
+| 7 | Menu sidebar trigger logout | Semua pakai `useAuthQuery`, placeholder jadi statis `ComingSoonPage` |
+| 8 | Port 8081 konflik Adminer | Gateway dev pakai port 8082 |
+| 9 | PowerShell `\|` dalam token | `-e` dan `"TOKEN=2\|xxx"` dipisah jadi dua argumen |
+| 10 | `create-vite` interaktif | Buat file project manual, npm dari host |
+
+---
+
+## 15. Roadmap
+
+- **Phase 4** — SNMP + RouterOS API lebih lengkap di collector
+- **Phase 5** — Historical metrics (PostgreSQL → VictoriaMetrics kalau volume besar)
+- **Phase 6** — Semua halaman CRUD lengkap (customers, billing, routers, dll)
+- **Phase 7** — Role-based UI gating di frontend
+- **Phase 8** — Notifikasi WhatsApp + payment gateway
+- **Phase 9** — NOC / Grafana (opsional)

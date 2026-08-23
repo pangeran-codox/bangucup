@@ -76,6 +76,50 @@ class MikrotikService
     }
 
     /**
+     * Ambil snapshot traffic per interface (rx/tx bits-per-second).
+     * Mengembalikan array of ['name' => ..., 'rx-bits-per-second' => ..., 'tx-bits-per-second' => ...]
+     * atau array kosong jika gagal terhubung.
+     */
+    public function getInterfaceTraffic(MikrotikRouter $router): array
+    {
+        try {
+            $client = $this->client($router);
+
+            // Ambil daftar nama interface terlebih dahulu
+            $ifaceList = $client->query(new Query('/interface/print'))->read();
+
+            if (empty($ifaceList)) {
+                return [];
+            }
+
+            $names = implode(',', array_column($ifaceList, 'name'));
+
+            // Monitor traffic sekali (snapshot), bukan streaming
+            $query = (new Query('/interface/monitor-traffic'))
+                ->equal('interface', $names)
+                ->equal('once', '');
+
+            $results = $client->query($query)->read();
+
+            return array_map(function (array $iface) {
+                return [
+                    'name'                 => $iface['name'] ?? '?',
+                    'rx-bits-per-second'   => (int) ($iface['rx-bits-per-second'] ?? 0),
+                    'tx-bits-per-second'   => (int) ($iface['tx-bits-per-second'] ?? 0),
+                    'rx-packets-per-second' => (int) ($iface['rx-packets-per-second'] ?? 0),
+                    'tx-packets-per-second' => (int) ($iface['tx-packets-per-second'] ?? 0),
+                ];
+            }, $results);
+        } catch (\Throwable $e) {
+            Log::warning("Mikrotik ({$router->name}): gagal ambil traffic interface", [
+                'error' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+    }
+
+    /**
      * Dipakai tombol "Test Koneksi" di halaman edit router.
      */
     public function testConnection(MikrotikRouter $router): bool

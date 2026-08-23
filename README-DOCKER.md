@@ -1,145 +1,170 @@
-# Docker Development Environment — Bangucup
+# Docker Setup — Bangucup
 
-## Struktur
+> Setup dev lokal. Untuk production lihat `docker-compose.swarm.yml`.
 
-```
-bangucup/
-├── docker/
-│   ├── nginx/default.conf
-│   └── php/
-│       ├── Dockerfile
-│       └── php.ini
-├── docker-compose.yml
-└── (source code Laravel kamu)
-```
+---
 
-## Setup Ini Untuk Reuse Infrastructure Existing
+## Container Dev
 
-Compose file ini SENGAJA tidak include Postgres/Redis — kamu sudah punya container `postgres` dan `redis` yang jalan dari stack lain (eduzone). Kita numpang ke situ.
+| Container | Image | Port | Fungsi |
+|---|---|---|---|
+| `bangucup-app` | custom PHP 8.4 FPM | — (9000 internal) | Laravel API |
+| `bangucup-nginx` | nginx:stable-alpine | **8085** | Web server |
+| `bangucup-node` | node:22-alpine | — | Node (tidak aktif, tidak ada internet) |
+| `bangucup-collector` | bangucup-collector:dev | — | Go: poll MikroTik → Redis |
+| `bangucup-gateway` | bangucup-gateway:dev | **8082** | Go: WebSocket gateway |
 
-### 0. Network sudah dikonfirmasi
+Semua join ke Docker network `network` (external — infra shared).
 
-Nama Docker network yang dipakai stack existing kamu (postgres, redis, dll) adalah **`network`**. File `docker-compose.yml` di sini sudah di-set untuk join ke network itu (lewat alias internal `infra` yang menunjuk ke `network` — cuma nama alias, gak perlu diubah). Gak perlu langkah cek manual lagi, langsung lanjut ke step berikutnya.
+> Port **8081** di-pakai Adminer di setup lokal ini → gateway dev pakai **8082**.
+> Di production Swarm, gateway pakai port 8081.
 
-### 1. Taruh file-file ini di root project Laravel
+---
 
-Salin folder `docker/` dan file `docker-compose.yml` ke root folder project Laravel kamu (sejajar dengan `artisan`, `composer.json`, dll).
+## Setup Pertama Kali
 
-### 2. Kalau belum ada project Laravel sama sekali
-
-Karena masalah versi PHP lokal kamu, kita skip `composer create-project` di Windows. Caranya:
+### 1. Cek Docker network
 
 ```bash
-# Buat folder kosong dulu
-mkdir bangucup
-cd bangucup
-
-# Taruh docker-compose.yml dan folder docker/ di sini
-
-# Build image PHP dulu (tanpa source code Laravel, nanti kita create project DI DALAM container)
-docker compose build app
-
-# Jalankan container app sementara buat create project Laravel via Composer di dalam container
-docker compose run --rm app composer create-project laravel/laravel .
+docker network ls
+# Cari nama network tempat postgres dan redis jalan
+# Default setup ini: "network"
+# Kalau beda, edit docker-compose.yml bagian networks.infra.name
 ```
 
-Ini bikin Laravel 13 ter-install pakai PHP 8.4 dari dalam container, gak peduli PHP versi berapa di Windows kamu.
-
-### 3. Buat database baru di Postgres existing
-
-Karena Postgres-nya dipakai bareng, bikin database baru khusus buat project ini (jangan numpang di database `eduzone`). Paling gampang lewat Adminer yang udah kamu punya di `http://localhost:8081`, atau via CLI:
+### 2. Build Go images (wajib, tidak ada di Docker Hub untuk dev)
 
 ```bash
-docker exec -it postgres psql -U <username_postgres_kamu> -c "CREATE DATABASE bangucup;"
+docker build -t bangucup-collector:dev ./services/mikrotik-collector
+docker build -t bangucup-gateway:dev ./services/realtime-gateway
 ```
 
-Ganti `<username_postgres_kamu>` dengan user Postgres yang dipakai stack eduzone (cek di `.env` project eduzone kamu, variable `DB_USERNAME`).
-
-### 4. Sesuaikan file `.env` Laravel
-
-Edit `.env` di root project `bangucup`. `DB_HOST` dan `REDIS_HOST` diisi **nama container** existing (bukan `localhost`), karena sekarang app baru ini satu network sama container itu:
-
-```env
-DB_CONNECTION=pgsql
-DB_HOST=postgres
-DB_PORT=5432
-DB_DATABASE=bangucup
-DB_USERNAME=<username_postgres_kamu>
-DB_PASSWORD=<password_postgres_kamu>
-
-REDIS_HOST=redis
-REDIS_PORT=6379
-
-CACHE_STORE=redis
-QUEUE_CONNECTION=redis
-SESSION_DRIVER=redis
-```
-
-> Penting: Redis dipakai bareng juga dengan project eduzone. Supaya cache/session/queue gak tabrakan, set prefix unik di `.env`:
-> ```env
-> REDIS_CACHE_PREFIX=bangucup_cache
-> REDIS_PREFIX=bangucup_database_
-> ```
-
-### 5. Jalankan semua service
+### 3. Start semua service
 
 ```bash
 docker compose up -d
 ```
 
-### 6. Generate app key & jalankan migration
+### 4. Install PHP dependencies
 
 ```bash
-docker compose exec app php artisan key:generate
-docker compose exec app php artisan migrate
+docker exec bangucup-app composer install
 ```
 
-### 7. Akses aplikasi
+### 5. Setup .env
 
-- **Laravel app**: http://localhost:8084 (port sengaja beda dari eduzone yang pakai 8083)
-- **Vite dev server** (React hot-reload): jalan otomatis di port 5173, dipanggil otomatis lewat `@vite` directive di Blade/Inertia
-- **Adminer** (kamu udah punya): http://localhost:8081 — pilih database `bangucup` buat lihat isi tabel
+Copy dari `.env.example` lalu isi credential yang sesuai.
+
+```bash
+docker exec bangucup-app php artisan key:generate
+docker exec bangucup-app php artisan migrate
+docker exec bangucup-app php artisan db:seed --class=RolePermissionSeeder
+docker exec bangucup-app php artisan db:seed --class=AdminSeeder
+```
+
+### 6. Generate token untuk collector
+
+```bash
+docker exec bangucup-app php artisan tinker \
+  --execute="echo App\Models\User::where('email','admin@bangucup.id')->first()->createToken('collector')->plainTextToken;"
+```
+
+Isi hasilnya ke `.env` sebagai `COLLECTOR_API_TOKEN=`.
+
+Restart collector agar pakai token baru:
+```bash
+docker compose restart mikrotik-collector
+```
+
+### 7. Install frontend dependencies (dari host)
+
+```bash
+cd frontend/admin
+npm install
+npm run dev
+# Buka http://localhost:5173
+```
+
+---
 
 ## Perintah Sehari-hari
 
-Semua perintah `artisan` / `composer` / `npm` dijalankan **di dalam container**, bukan langsung di Windows:
-
 ```bash
-# Artisan command
-docker compose exec app php artisan migrate
-docker compose exec app php artisan make:model Customer -m
-docker compose exec app php artisan tinker
+# Start / stop
+docker compose up -d
+docker compose down
+docker compose restart bangucup-app
+
+# Artisan
+docker exec bangucup-app php artisan migrate
+docker exec bangucup-app php artisan optimize:clear
+docker exec bangucup-app php artisan tinker
 
 # Composer
-docker compose exec app composer require spatie/laravel-permission
-docker compose exec app composer require inertiajs/inertia-laravel
+docker exec bangucup-app composer install
+docker exec bangucup-app composer require <package>
 
-# NPM (kalau perlu manual, biasanya udah auto-run di service node)
-docker compose exec node npm install <package>
+# Frontend (dari host)
+cd frontend/admin
+npm run dev
+npm install <package>
+npm run build
 
-# Masuk shell container
-docker compose exec app bash
+# Rebuild Go images setelah ada perubahan kode Go
+docker compose build mikrotik-collector realtime-gateway
+docker compose up -d mikrotik-collector realtime-gateway
 
-# Lihat log realtime
-docker compose logs -f app
+# Logs
+docker logs -f bangucup-app
+docker logs -f bangucup-collector
+docker logs -f bangucup-gateway
 
-# Stop semua service
-docker compose down
-
-# Stop + hapus volume database (hati-hati, data ilang)
-docker compose down -v
+# Redis debug
+docker exec redis redis-cli keys "bangucup:*"
+docker exec redis redis-cli get "bangucup:router:3:status"
 ```
 
-## Kenapa Setup Ini Cocok Buat Kasus Kamu
+---
 
-- **PHP 8.4 terkunci di dalam container** — gak peduli Laragon/Windows kamu masih PHP 8.1, di dalam Docker selalu konsisten 8.4
-- **Numpang Postgres & Redis existing** — gak boros resource jalanin database server dobel, database baru cukup dibikin di server yang sama
-- **Node terpisah** — biar proses `npm run dev` (Vite + React hot-reload) jalan independen dari PHP container
-- **Port nginx beda** (8084) — gak bentrok sama project eduzone kamu yang udah pakai 8083
+## Verifikasi Semua Jalan
 
-## Langkah Selanjutnya Setelah Ini Jalan
+```bash
+# API
+curl http://localhost:8085/up
+curl http://localhost:8085/api/auth/login \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"email":"admin@bangucup.id","password":"Admin1234!"}'
 
-1. `docker compose exec app composer require laravel/breeze` atau langsung setup Inertia manual
-2. Copy 14 file migration yang sudah dibuatkan sebelumnya ke `database/migrations/`
-3. `docker compose exec app php artisan migrate`
-4. Install React + Inertia + Tailwind + shadcn/ui
+# WebSocket gateway
+curl http://localhost:8082/healthz
+
+# Redis (tunggu ~10 detik setelah collector jalan)
+docker exec redis redis-cli keys "bangucup:router:*"
+```
+
+---
+
+## Troubleshooting
+
+| Masalah | Solusi |
+|---|---|
+| `Class "Filament\PanelProvider" not found` | `docker exec bangucup-app sh -c "rm -rf bootstrap/cache/filament && php artisan optimize:clear"` |
+| Login 500 Internal Server Error | Cek log: `docker logs bangucup-app` |
+| Login redirect balik ke /login terus | Clear localStorage browser: DevTools Console → `localStorage.clear(); location.reload()` |
+| API 401 padahal baru login | Token expired di localStorage — clear localStorage |
+| Collector tidak jalan | Cek `COLLECTOR_API_TOKEN` di `.env` sudah diisi |
+| Port 8082 gagal bind | Cek port conflict: `docker ps` — mungkin ada container lain |
+| Go build gagal | Pastikan `go.sum` ada di `services/mikrotik-collector/` dan `services/realtime-gateway/` |
+| `nginx: [emerg] host not found` | Race condition — `docker compose restart bangucup-nginx` |
+
+---
+
+## Dev vs Production
+
+| Aspek | Dev | Prod (Swarm) |
+|---|---|---|
+| PHP image | Dockerfile (volume mount) | Dockerfile.prod (multi-stage) |
+| Go images | local `bangucup-*:dev` | `iswant/bangucup-*:latest` (Docker Hub) |
+| Gateway port | **8082** | **8081** |
+| Orchestration | Docker Compose | Docker Swarm |
+| Frontend | Vite dev server (`npm run dev`) | Built static (`npm run build`) |

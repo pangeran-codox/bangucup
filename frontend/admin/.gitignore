@@ -1,0 +1,13 @@
+# Frontend-specific gitignore
+node_modules/
+dist/
+dist-ssr/
+*.local
+.env.local
+.env.*.local
+
+# Vite cache
+.vite/
+
+# TypeScript build info
+*.tsbuildinfo

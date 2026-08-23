@@ -40,6 +40,49 @@ services:
     networks:
       - infra
 
+  # ─── Go: MikroTik Collector ─────────────────────────────────────
+  # Poll semua router tiap 5 detik → Redis Pub/Sub
+  mikrotik-collector:
+    build:
+      context: ./services/mikrotik-collector
+      dockerfile: Dockerfile
+    container_name: bangucup-collector
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR:        redis:6379
+      REDIS_PASSWORD:    ${REDIS_PASSWORD:-}
+      REDIS_DB:          ${REDIS_DB:-0}
+      LARAVEL_API_URL:   http://bangucup-nginx/api
+      # Token Sanctum dari user admin — set di .env
+      LARAVEL_API_TOKEN: ${COLLECTOR_API_TOKEN:-}
+      POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-5}
+    depends_on:
+      - app
+      - nginx
+    networks:
+      - infra
+
+  # ─── Go: Realtime Gateway ────────────────────────────────────────
+  # Subscribe Redis → broadcast ke browser via WebSocket
+  realtime-gateway:
+    build:
+      context: ./services/realtime-gateway
+      dockerfile: Dockerfile
+    container_name: bangucup-gateway
+    restart: unless-stopped
+    ports:
+      - "8082:8081"
+    environment:
+      LISTEN_ADDR:    :8081
+      REDIS_ADDR:     redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB:       ${REDIS_DB:-0}
+      ALLOWED_ORIGIN: "*"
+    depends_on:
+      - mikrotik-collector
+    networks:
+      - infra
+
 networks:
   infra:
     external: true

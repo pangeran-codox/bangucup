@@ -1,20 +1,7 @@
 <?php
 
-use App\Models\Package;
 use Illuminate\Support\Facades\Route;
-use Inertia\Inertia;
 
-Route::get('/', function () {
-    return Inertia::render('Welcome', [
-        'packages' => Package::query()
-            ->where('is_active', true)
-            ->orderBy('price')
-            ->get(['id', 'name', 'speed_mbps', 'price'])
-            ->map(fn (Package $package) => [
-                'id' => $package->id,
-                'name' => $package->name,
-                'speed_mbps' => $package->speed_mbps,
-                'price' => (float) $package->price,
-            ]),
-    ]);
-});
+// Web routes kosong — semua akses melalui API (routes/api.php)
+// Frontend React di-serve terpisah via Vite / Nginx
+Route::get('/', fn () => response()->json(['app' => config('app.name'), 'version' => '2.0']));

@@ -7,11 +7,9 @@
     "license": "MIT",
     "require": {
         "php": "^8.3",
-        "dotswan/filament-map-picker": "^2.3",
         "evilfreelancer/routeros-api-php": "^1.7",
-        "filament/filament": "^5.7",
-        "inertiajs/inertia-laravel": "^3.1",
         "laravel/framework": "^13.8",
+        "laravel/sanctum": "^4.3",
         "laravel/tinker": "^3.0",
         "predis/predis": "^3.5",
         "spatie/laravel-permission": "^8.3"
@@ -56,8 +54,7 @@
         ],
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
-            "@php artisan package:discover --ansi",
-            "@php artisan filament:upgrade"
+            "@php artisan package:discover --ansi"
         ],
         "post-update-cmd": [
             "@php artisan vendor:publish --tag=laravel-assets --ansi --force"

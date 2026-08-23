@@ -1,27 +1,63 @@
-*.log
-.DS_Store
+# ══════════════════════════════════════════════════════════════════
+# .gitignore — Bangucup ISP Management
+# ══════════════════════════════════════════════════════════════════
+
+# ─── Environment & secrets ───────────────────────────────────────
 .env
 .env.backup
 .env.production
-.phpactor.json
-.phpunit.result.cache
-/.codex
-/.cursor/
-/.idea
-/.nova
-/.phpunit.cache
-/.vscode
-/.zed
-/auth.json
+.env.*.local
+auth.json
+/storage/*.key
+
+# ─── Laravel ─────────────────────────────────────────────────────
+/vendor
 /node_modules
 /public/build
-/public/fonts-manifest.dev.json
 /public/hot
 /public/storage
-/storage/*.key
 /storage/pail
-/vendor
+/bootstrap/cache/*.php
+/bootstrap/cache/filament/
+.phpunit.result.cache
+/.phpunit.cache
 _ide_helper.php
+_ide_helper_models.php
+.phpactor.json
+
+# ─── Frontend (frontend/admin) ───────────────────────────────────
+/frontend/admin/node_modules
+/frontend/admin/dist
+/frontend/admin/.env.local
+/frontend/admin/.env.*.local
+# .env.development dan .env.production frontend IKUT di-commit
+# karena hanya berisi VITE_WS_URL, tidak ada secret
+
+# ─── Go services (go.sum IKUT di-commit untuk reproducible build) ─
+/services/mikrotik-collector/vendor/
+/services/realtime-gateway/vendor/
+
+# ─── Docker ──────────────────────────────────────────────────────
+# docker-compose.override.yml boleh ada tapi tidak di-commit
+docker-compose.override.yml
+
+# ─── IDE & OS ────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+.cursor/
+.nova/
+.zed/
+/.codex
 Homestead.json
 Homestead.yaml
-Thumbs.db
+/public/fonts-manifest.dev.json
+
+# ─── Test artifacts ──────────────────────────────────────────────
+/coverage
+*.coverage
+
+# Sisa Filament blade views (tidak lagi dipakai)
+/resources/views/filament/

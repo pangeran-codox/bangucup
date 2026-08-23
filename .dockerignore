@@ -1,19 +1,47 @@
-node_modules
-vendor
-.git
+# ─── Dependencies (di-install saat build) ────────────────────────
+vendor/
+node_modules/
+frontend/admin/node_modules/
+frontend/admin/dist/
+
+# ─── Git ──────────────────────────────────────────────────────────
+.git/
 .gitignore
-docker
+.gitattributes
+
+# ─── Environment & secrets ────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Dev-only Docker files ────────────────────────────────────────
 docker-compose.yml
-README.md
-README-DOCKER.md
+docker-compose.override.yml
+
+# ─── Storage runtime (dibuat saat container jalan) ────────────────
 storage/logs/*
-storage/framework/cache/*
+storage/framework/cache/data/*
 storage/framework/sessions/*
 storage/framework/views/*
 storage/framework/testing/*
+
+# ─── Build artifacts ─────────────────────────────────────────────
 public/hot
 public/build
-.env
-.env.backup
 .phpunit.result.cache
+/.phpunit.cache
+bootstrap/cache/*.php
+bootstrap/cache/filament/
+
+# ─── Dev tools ───────────────────────────────────────────────────
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.cursor/
 npm-debug.log
+yarn-error.log
+
+# ─── Go services (built terpisah) ─────────────────────────────────
+services/

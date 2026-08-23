@@ -14,5 +14,12 @@ trim_trailing_whitespace = false
 [*.{yml,yaml}]
 indent_size = 2
 
-[{compose,docker-compose}.{yml,yaml}]
+[*.{ts,tsx,js,jsx,json,css}]
+indent_size = 2
+
+[*.go]
+indent_style = tab
 indent_size = 4
+
+[Makefile]
+indent_style = tab
