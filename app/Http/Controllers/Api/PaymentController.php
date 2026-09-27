@@ -5,12 +5,15 @@ namespace App\Http\Controllers\Api;
 use App\Http\Resources\PaymentResource;
 use App\Models\Invoice;
 use App\Models\Payment;
+use App\Services\BillingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
 class PaymentController extends ApiController
 {
+    public function __construct(private readonly BillingService $billing) {}
+
     public function index(Request $request): JsonResponse
     {
         $query = Payment::with('invoice.customer');
@@ -61,7 +64,11 @@ class PaymentController extends ApiController
         // Jika sukses, update status invoice
         if (($data['status'] ?? 'pending') === 'success') {
             $invoice = Invoice::find($data['invoice_id']);
-            $invoice?->update(['status' => 'paid', 'paid_at' => $data['paid_at'] ?? now()]);
+
+            if ($invoice) {
+                $invoice->update(['status' => 'paid', 'paid_at' => $data['paid_at'] ?? now()]);
+                $this->billing->restoreIfSettled($invoice);
+            }
         }
 
         return $this->created(new PaymentResource($payment), 'Pembayaran berhasil dicatat');

@@ -15,6 +15,8 @@ use App\Http\Controllers\Api\OdpController;
 use App\Http\Controllers\Api\VoucherController;
 use App\Http\Controllers\Api\DeviceController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\CableRouteController;
+use App\Http\Controllers\Api\IsolirLogController;
 
 // ─── Auth (publik) ────────────────────────────────────────────────
 Route::prefix('auth')->group(function () {
@@ -67,6 +69,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ODPs
     Route::apiResource('odps', OdpController::class);
+
+    // Cable Routes
+    Route::apiResource('cable-routes', CableRouteController::class)
+        ->parameters(['cable-routes' => 'cableRoute']);
+
+    // Isolir Logs (read-only)
+    Route::get('isolir-logs',                  [IsolirLogController::class, 'index']);
+    Route::get('isolir-logs/{isolirLog}',      [IsolirLogController::class, 'show']);
 
     // Vouchers
     Route::apiResource('vouchers', VoucherController::class);

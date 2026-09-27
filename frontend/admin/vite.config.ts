@@ -23,9 +23,16 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '0.0.0.0',
+    // Docker on Windows (bind mount) tidak trigger inotify → pakai polling
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
     proxy: {
       '/api': {
-        target: 'http://localhost:8085',
+        // Di dalam Docker container, resolve via nama service nginx
+        // Di luar Docker (npm run dev dari host), ganti ke http://localhost:8085
+        target: 'http://bangucup-nginx',
         changeOrigin: true,
       },
     },

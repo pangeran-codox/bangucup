@@ -1,58 +1,96 @@
 import { useState } from 'react'
-import { Outlet, useLocation } from 'react-router'
+import { Outlet } from 'react-router'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
-import { cn } from '@/lib/utils'
-
-const pageTitles: Record<string, string> = {
-  '/dashboard': 'Dashboard',
-  '/customers': 'Pelanggan',
-  '/packages': 'Paket Internet',
-  '/billing/invoices': 'Invoice',
-  '/billing/payments': 'Pembayaran',
-  '/routers': 'Router MikroTik',
-  '/monitoring': 'Monitoring',
-  '/tickets': 'Tiket',
-  '/assets': 'Aset',
-  '/devices': 'Perangkat',
-  '/settings': 'Pengaturan',
-}
 
 export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const location = useLocation()
-  const title = pageTitles[location.pathname] ?? 'Bangucup'
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      {/* Mobile sidebar overlay */}
-      {sidebarOpen && (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&family=Space+Grotesk:wght@600;700&display=swap');
+
+        .app-layout-root {
+          display: flex;
+          min-height: 100vh;
+          background: #000000;
+          color: #e2e2e8;
+          font-family: 'Inter', sans-serif;
+        }
+        .app-sidebar-fixed {
+          position: fixed;
+          inset: 0 auto 0 0;
+          z-index: 50;
+          width: 256px;
+          display: none;
+          transition: transform 0.25s;
+        }
+        @media (min-width: 1024px) {
+          .app-sidebar-fixed { display: flex; }
+        }
+        .app-sidebar-mobile {
+          position: fixed;
+          inset: 0 auto 0 0;
+          z-index: 50;
+          width: 256px;
+          transform: translateX(-100%);
+          transition: transform 0.25s;
+          display: flex;
+        }
+        .app-sidebar-mobile.open { transform: translateX(0); }
+        .app-sidebar-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 40;
+          background: rgba(0,0,0,0.7);
+          display: none;
+        }
+        .app-sidebar-overlay.open { display: block; }
+        @media (min-width: 1024px) {
+          .app-sidebar-mobile { display: none; }
+          .app-sidebar-overlay { display: none !important; }
+        }
+        .app-content {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          min-height: 100vh;
+          overflow: hidden;
+        }
+        @media (min-width: 1024px) {
+          .app-content { margin-left: 256px; }
+        }
+        .app-main {
+          flex: 1;
+          overflow-y: auto;
+        }
+      `}</style>
+
+      <div className="app-layout-root">
+        {/* Desktop sidebar */}
+        <div className="app-sidebar-fixed">
+          <Sidebar />
+        </div>
+
+        {/* Mobile sidebar */}
         <div
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          className={`app-sidebar-overlay${sidebarOpen ? ' open' : ''}`}
           onClick={() => setSidebarOpen(false)}
         />
-      )}
+        <div className={`app-sidebar-mobile${sidebarOpen ? ' open' : ''}`}>
+          <Sidebar />
+        </div>
 
-      {/* Sidebar — hidden on mobile, fixed on desktop */}
-      <div
-        className={cn(
-          'fixed inset-y-0 left-0 z-50 transition-transform duration-200 md:static md:translate-x-0 md:z-auto',
-          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-        )}
-      >
-        <Sidebar />
+        {/* Content */}
+        <div className="app-content">
+          <Topbar onMenuClick={() => setSidebarOpen(true)} />
+          <main className="app-main">
+            <Outlet />
+          </main>
+        </div>
       </div>
-
-      {/* Main */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar
-          title={title}
-          onMenuClick={() => setSidebarOpen(true)}
-        />
-        <main className="flex-1 overflow-y-auto p-6">
-          <Outlet />
-        </main>
-      </div>
-    </div>
+    </>
   )
 }

@@ -26,17 +26,38 @@ services:
     networks:
       - infra
 
+  # ─── Scheduler (cron artisan) ────────────────────────────────────
+  # Menjalankan `php artisan schedule:run` tiap menit (billing, genieacs sync).
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+    container_name: bangucup-scheduler
+    restart: unless-stopped
+    volumes:
+      - ./:/var/www/html
+      - ./docker/php/php.ini:/usr/local/etc/php/conf.d/custom.ini
+      - vendor_data:/var/www/html/vendor
+    command: sh -c "while true; do php artisan schedule:run --no-interaction; sleep 60; done"
+    depends_on:
+      - app
+    networks:
+      - infra
+
   node:
     image: node:22-alpine
     container_name: bangucup-node
     restart: unless-stopped
-    working_dir: /var/www/html
+    working_dir: /app
     volumes:
-      - ./:/var/www/html
-      - node_modules_data:/var/www/html/node_modules
+      # Source frontend di-mount ke /app (bukan /var/www/html agar tidak bentrok dengan PHP)
+      - ./frontend/admin:/app
+      # node_modules pakai named volume Linux — tidak pakai node_modules dari Windows host
+      - frontend_node_modules:/app/node_modules
     ports:
       - "5173:5173"
-    command: sh -c "npm install && npm run dev -- --host"
+    # Install deps dulu (pakai node_modules Linux), lalu jalankan dev server
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     networks:
       - infra
 
@@ -92,4 +113,6 @@ volumes:
   vendor_data:
     driver: local
   node_modules_data:
+    driver: local
+  frontend_node_modules:
     driver: local

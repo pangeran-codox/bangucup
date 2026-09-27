@@ -1,17 +1,19 @@
 import { lazy, Suspense } from 'react'
-import { createBrowserRouter, Navigate } from 'react-router'
+import { createBrowserRouter } from 'react-router'
 import { AppLayout } from '@/components/layout/AppLayout'
-import { AuthLayout } from '@/components/layout/AuthLayout'
 import { ProtectedRoute, GuestRoute } from './ProtectedRoute'
 import { Loader2 } from 'lucide-react'
 
 // Lazy load pages
 const LoginPage       = lazy(() => import('@/features/auth/LoginPage'))
 const NotFoundPage    = lazy(() => import('@/features/auth/NotFoundPage'))
+const LandingPage     = lazy(() => import('@/features/landing/LandingPage'))
 const DashboardPage   = lazy(() => import('@/features/dashboard/DashboardPage'))
 const CustomersPage   = lazy(() => import('@/features/customers/CustomersPage'))
 const RoutersPage     = lazy(() => import('@/features/routers/RoutersPage'))
 const MonitoringPage  = lazy(() => import('@/features/monitoring/MonitoringPage'))
+const PackagesPage    = lazy(() => import('@/features/packages/PackagesPage'))
+const BillingPage     = lazy(() => import('@/features/billing/BillingPage'))
 const ComingSoonPage  = lazy(() => import('@/features/shared/ComingSoonPage'))
 
 function PageLoader() {
@@ -41,22 +43,18 @@ function comingSoon(title: string, description?: string) {
 }
 
 export const router = createBrowserRouter([
-  // Redirect root
+  // Landing page — publik, tidak butuh auth
   {
     path: '/',
-    element: <Navigate to="/dashboard" replace />,
+    element: withSuspense(LandingPage),
   },
 
   // Guest routes — hanya bisa diakses kalau belum login
   {
     element: <GuestRoute />,
     children: [
-      {
-        element: <AuthLayout />,
-        children: [
-          { path: '/login', element: withSuspense(LoginPage) },
-        ],
-      },
+      // Login pakai full-page layout sendiri (tidak pakai AuthLayout)
+      { path: '/login', element: withSuspense(LoginPage) },
     ],
   },
 
@@ -74,11 +72,10 @@ export const router = createBrowserRouter([
           { path: '/monitoring', element: withSuspense(MonitoringPage) },
 
           // Halaman yang belum diimplementasi — placeholder statis, tidak ada query
-          { path: '/packages',            element: comingSoon('Paket Internet', 'Manajemen paket layanan ISP') },
-          { path: '/billing',             element: comingSoon('Billing', 'Manajemen invoice dan pembayaran') },
-          { path: '/billing/invoices',    element: comingSoon('Invoice', 'Daftar invoice pelanggan') },
-          { path: '/billing/invoices/:id',element: comingSoon('Detail Invoice') },
-          { path: '/billing/payments',    element: comingSoon('Pembayaran', 'Riwayat pembayaran') },
+          { path: '/packages',            element: withSuspense(PackagesPage) },
+          { path: '/billing',             element: withSuspense(BillingPage) },
+          { path: '/billing/invoices',    element: withSuspense(BillingPage) },
+          { path: '/billing/payments',    element: withSuspense(BillingPage) },
           { path: '/tickets',             element: comingSoon('Tiket', 'Manajemen tiket support') },
           { path: '/tickets/:id',         element: comingSoon('Detail Tiket') },
           { path: '/assets',              element: comingSoon('Aset', 'Inventori peralatan jaringan') },

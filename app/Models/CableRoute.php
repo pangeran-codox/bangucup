@@ -19,6 +19,10 @@ class CableRoute extends Model
         'path' => 'array',
     ];
 
+    protected $attributes = [
+        'status' => 'active',
+    ];
+
     public function odp(): BelongsTo
     {
         return $this->belongsTo(Odp::class);

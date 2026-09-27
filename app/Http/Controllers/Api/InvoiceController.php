@@ -5,11 +5,14 @@ namespace App\Http\Controllers\Api;
 use App\Http\Requests\Invoice\StoreInvoiceRequest;
 use App\Http\Resources\InvoiceResource;
 use App\Models\Invoice;
+use App\Services\BillingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class InvoiceController extends ApiController
 {
+    public function __construct(private readonly BillingService $billing) {}
+
     public function index(Request $request): JsonResponse
     {
         $query = Invoice::with('customer');
@@ -87,6 +90,11 @@ class InvoiceController extends ApiController
             'paid_at' => now(),
         ]);
 
-        return $this->success(new InvoiceResource($invoice), 'Invoice ditandai lunas');
+        $restored = $this->billing->restoreIfSettled($invoice);
+
+        return $this->success(
+            new InvoiceResource($invoice),
+            $restored ? 'Invoice ditandai lunas, langganan dipulihkan' : 'Invoice ditandai lunas'
+        );
     }
 }

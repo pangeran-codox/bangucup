@@ -11,3 +11,16 @@ Artisan::command('inspire', function () {
 Schedule::command('genieacs:sync-devices')
     ->everyFiveMinutes()
     ->withoutOverlapping();
+
+// ─── Billing ──────────────────────────────────────────────────────
+Schedule::command('billing:generate-invoices')
+    ->dailyAt('00:05')
+    ->withoutOverlapping();
+
+Schedule::command('billing:mark-overdue')
+    ->dailyAt('00:15')
+    ->withoutOverlapping();
+
+Schedule::command('billing:auto-isolir')
+    ->dailyAt('01:00')
+    ->withoutOverlapping();

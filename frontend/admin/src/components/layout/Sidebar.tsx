@@ -1,99 +1,24 @@
-import { NavLink, useLocation, useNavigate } from 'react-router'
-import {
-  LayoutDashboard,
-  Users,
-  Package,
-  FileText,
-  Router,
-  Activity,
-  Settings,
-  ChevronDown,
-  Wifi,
-  TicketCheck,
-  BoxIcon,
-  LogOut,
-} from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { NavLink, useNavigate } from 'react-router'
 import { useAuthStore } from '@/stores/authStore'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Separator } from '@/components/ui/separator'
 
 interface NavItem {
   label: string
   href: string
-  icon: React.ElementType
+  icon: string
   children?: NavItem[]
 }
 
 const navItems: NavItem[] = [
-  { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { label: 'Pelanggan', href: '/customers', icon: Users },
-  { label: 'Paket', href: '/packages', icon: Package },
-  {
-    label: 'Billing',
-    href: '/billing',
-    icon: FileText,
-    children: [
-      { label: 'Invoice', href: '/billing/invoices', icon: FileText },
-      { label: 'Pembayaran', href: '/billing/payments', icon: FileText },
-    ],
-  },
-  { label: 'Router', href: '/routers', icon: Router },
-  { label: 'Monitoring', href: '/monitoring', icon: Activity },
-  { label: 'Tiket', href: '/tickets', icon: TicketCheck },
-  { label: 'Aset', href: '/assets', icon: BoxIcon },
-  { label: 'Perangkat', href: '/devices', icon: Wifi },
-  { label: 'Pengaturan', href: '/settings', icon: Settings },
+  { label: 'Overview',           href: '/dashboard',        icon: 'dashboard' },
+  { label: 'Network Analytics',  href: '/monitoring',       icon: 'monitoring' },
+  { label: 'Pelanggan',          href: '/customers',        icon: 'group' },
+  { label: 'Perangkat',          href: '/devices',          icon: 'devices' },
+  { label: 'Billing',            href: '/billing/invoices', icon: 'receipt_long' },
+  { label: 'Paket',              href: '/packages',         icon: 'inventory_2' },
+  { label: 'Router',             href: '/routers',          icon: 'router' },
+  { label: 'Tiket',              href: '/tickets',          icon: 'support_agent' },
+  { label: 'Aset',               href: '/assets',           icon: 'inventory' },
 ]
-
-function NavItemComponent({ item, depth = 0 }: { item: NavItem; depth?: number }) {
-  const location = useLocation()
-  const isActive = location.pathname.startsWith(item.href)
-  const hasChildren = item.children && item.children.length > 0
-
-  if (hasChildren) {
-    return (
-      <div>
-        <div
-          className={cn(
-            'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors cursor-default',
-            isActive
-              ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-              : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
-          )}
-          style={{ paddingLeft: depth > 0 ? `${12 + depth * 16}px` : undefined }}
-        >
-          <item.icon className="h-4 w-4 shrink-0" />
-          <span className="flex-1">{item.label}</span>
-          <ChevronDown className="h-3 w-3" />
-        </div>
-        <div className="mt-1 space-y-1">
-          {item.children!.map((child) => (
-            <NavItemComponent key={child.href} item={child} depth={depth + 1} />
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <NavLink
-      to={item.href}
-      className={({ isActive }) =>
-        cn(
-          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-          isActive
-            ? 'bg-sidebar-accent text-sidebar-accent-foreground'
-            : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground'
-        )
-      }
-      style={{ paddingLeft: depth > 0 ? `${12 + depth * 16}px` : undefined }}
-    >
-      <item.icon className="h-4 w-4 shrink-0" />
-      <span>{item.label}</span>
-    </NavLink>
-  )
-}
 
 export function Sidebar() {
   const { user, logout } = useAuthStore()
@@ -109,54 +34,194 @@ export function Sidebar() {
     : 'AD'
 
   return (
-    <aside className="flex h-full w-64 flex-col bg-sidebar">
-      {/* Logo */}
-      <div className="flex h-16 items-center gap-3 px-6 shrink-0">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-blue-500">
-          <Wifi className="h-4 w-4 text-white" />
-        </div>
-        <div>
-          <p className="text-sm font-bold text-sidebar-foreground">Bangucup</p>
-          <p className="text-xs text-sidebar-foreground/50">ISP Management</p>
-        </div>
-      </div>
+    <>
+      <style>{`
+        .sidebar-root {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          width: 256px;
+          background: rgba(0,0,0,0.4);
+          backdrop-filter: blur(24px);
+          -webkit-backdrop-filter: blur(24px);
+          border-right: 1px solid rgba(245,165,36,0.2);
+          box-shadow: 4px 0 32px rgba(245,165,36,0.1);
+          padding: 32px 16px 24px;
+          overflow-y: auto;
+        }
+        .sidebar-logo {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 48px;
+          padding: 0 8px;
+        }
+        .sidebar-logo-icon {
+          width: 32px; height: 32px;
+          border-radius: 8px;
+          background: rgba(245,165,36,0.15);
+          border: 1px solid rgba(245,165,36,0.3);
+          display: flex; align-items: center; justify-content: center;
+        }
+        .sidebar-logo-text {
+          font-family: 'Space Grotesk', sans-serif;
+          font-size: 18px;
+          font-weight: 600;
+          color: #e2e2e8;
+          letter-spacing: -0.01em;
+        }
+        .sidebar-nav {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          flex: 1;
+        }
+        .sidebar-link {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 16px;
+          border-radius: 12px;
+          font-family: 'Inter', sans-serif;
+          font-size: 14px;
+          font-weight: 500;
+          color: #d7c3ae;
+          text-decoration: none;
+          border: 1px solid transparent;
+          transition: all 0.2s;
+        }
+        .sidebar-link:hover {
+          color: #f5a524;
+          background: rgba(245,165,36,0.05);
+          border-color: rgba(245,165,36,0.2);
+          box-shadow: 0 0 12px rgba(245,165,36,0.1);
+        }
+        .sidebar-link:hover .sidebar-icon {
+          filter: drop-shadow(0 0 8px rgba(245,165,36,0.8));
+        }
+        .sidebar-link.active {
+          color: #f5a524;
+          background: rgba(245,165,36,0.1);
+          border-color: rgba(245,165,36,0.2);
+          box-shadow: 0 0 12px rgba(245,165,36,0.2);
+        }
+        .sidebar-icon {
+          font-size: 20px;
+          transition: all 0.2s;
+        }
+        .sidebar-divider {
+          height: 1px;
+          background: rgba(245,165,36,0.15);
+          margin: 16px 8px;
+        }
+        .sidebar-footer {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 12px 8px;
+          border-radius: 12px;
+          border: 1px solid rgba(245,165,36,0.1);
+          background: rgba(245,165,36,0.03);
+        }
+        .sidebar-avatar {
+          width: 32px; height: 32px;
+          border-radius: 50%;
+          background: rgba(245,165,36,0.2);
+          border: 1px solid rgba(245,165,36,0.4);
+          display: flex; align-items: center; justify-content: center;
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          font-weight: 600;
+          color: #f5a524;
+          flex-shrink: 0;
+        }
+        .sidebar-user-name {
+          font-family: 'Inter', sans-serif;
+          font-size: 13px;
+          font-weight: 500;
+          color: #e2e2e8;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          flex: 1;
+          min-width: 0;
+        }
+        .sidebar-logout {
+          background: none;
+          border: none;
+          cursor: pointer;
+          color: #d7c3ae;
+          padding: 4px;
+          border-radius: 6px;
+          display: flex;
+          align-items: center;
+          transition: color 0.2s;
+          flex-shrink: 0;
+        }
+        .sidebar-logout:hover { color: #f5a524; }
+        .sidebar-settings-link {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 16px;
+          border-radius: 12px;
+          font-family: 'Inter', sans-serif;
+          font-size: 14px;
+          font-weight: 500;
+          color: #d7c3ae;
+          text-decoration: none;
+          border: 1px solid transparent;
+          transition: all 0.2s;
+          margin-bottom: 8px;
+        }
+        .sidebar-settings-link:hover {
+          color: #f5a524;
+          background: rgba(245,165,36,0.05);
+          border-color: rgba(245,165,36,0.2);
+        }
+      `}</style>
 
-      <Separator className="bg-sidebar-border" />
-
-      {/* Nav */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
-        {navItems.map((item) => (
-          <NavItemComponent key={item.href} item={item} />
-        ))}
-      </nav>
-
-      <Separator className="bg-sidebar-border" />
-
-      {/* User */}
-      <div className="px-3 py-4">
-        <div className="flex items-center gap-3 rounded-md px-3 py-2">
-          <Avatar className="h-8 w-8">
-            <AvatarFallback className="bg-blue-500 text-white text-xs">
-              {initials}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-sidebar-foreground truncate">
-              {user?.name ?? 'Administrator'}
-            </p>
-            <p className="text-xs text-sidebar-foreground/50 truncate">
-              {user?.email ?? ''}
-            </p>
+      <aside className="sidebar-root">
+        {/* Logo */}
+        <div className="sidebar-logo">
+          <div className="sidebar-logo-icon">
+            <span className="material-symbols-outlined" style={{ fontSize: 18, color: '#f5a524', fontVariationSettings: "'FILL' 1" }}>wifi</span>
           </div>
-          <button
-            onClick={handleLogout}
-            className="text-sidebar-foreground/50 hover:text-sidebar-foreground transition-colors"
-            title="Logout"
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
+          <span className="sidebar-logo-text">Bangucup</span>
         </div>
-      </div>
-    </aside>
+
+        {/* Nav items */}
+        <nav className="sidebar-nav">
+          {navItems.map(item => (
+            <NavLink
+              key={item.href}
+              to={item.href}
+              className={({ isActive }) =>
+                `sidebar-link${isActive ? ' active' : ''}`
+              }
+            >
+              <span className="material-symbols-outlined sidebar-icon">{item.icon}</span>
+              <span>{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+
+        {/* Bottom */}
+        <div>
+          <NavLink to="/settings" className="sidebar-settings-link">
+            <span className="material-symbols-outlined sidebar-icon">settings</span>
+            <span>Settings</span>
+          </NavLink>
+          <div className="sidebar-divider" />
+          <div className="sidebar-footer">
+            <div className="sidebar-avatar">{initials}</div>
+            <span className="sidebar-user-name">{user?.name ?? 'Administrator'}</span>
+            <button className="sidebar-logout" onClick={handleLogout} title="Logout">
+              <span className="material-symbols-outlined" style={{ fontSize: 18 }}>logout</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+    </>
   )
 }

@@ -142,6 +142,7 @@ bangucup/
 | `bangucup-app` | custom PHP 8.4 FPM | — (9000 internal) | Laravel API |
 | `bangucup-nginx` | nginx:stable-alpine | **8085** | Web server + proxy ke PHP-FPM |
 | `bangucup-node` | node:22-alpine | — | Node runtime (tidak aktif dev) |
+| `bangucup-scheduler` | custom PHP 8.4 FPM | — | `artisan schedule:run` tiap menit |
 | `bangucup-collector` | bangucup-collector:dev | — | Go: poll MikroTik → Redis |
 | `bangucup-gateway` | bangucup-gateway:dev | **8082** | Go: Redis → WebSocket |
 
@@ -196,6 +197,9 @@ GENIEACS_ONLINE_THRESHOLD_MINUTES=15
 MIKROTIK_TIMEOUT=5
 MIKROTIK_ISOLIR_PROFILE=isolir
 
+# Masa tenggang (hari) setelah due_date sebelum auto-isolir
+BILLING_ISOLIR_GRACE_DAYS=3
+
 # Generate: docker exec bangucup-app php artisan tinker \
 #   --execute="echo App\Models\User::where('email','admin@bangucup.id')->first()->createToken('collector')->plainTextToken;"
 COLLECTOR_API_TOKEN=
@@ -248,6 +252,8 @@ GET/POST/PUT/DELETE   /api/assets/{id}
 GET/POST              /api/assets/{id}/movements
 
 GET/POST/PUT/DELETE   /api/odps/{id}
+GET/POST/PUT/DELETE   /api/cable-routes/{id}
+GET                   /api/isolir-logs + /api/isolir-logs/{id}   ← read-only
 GET/POST/PUT/DELETE   /api/vouchers/{id}
 GET/GET               /api/devices + /api/devices/{id}
 POST                  /api/devices/{id}/refresh
@@ -395,6 +401,7 @@ docker stack deploy -c docker-compose.swarm.yml bangucup
 | 8 | Port 8081 konflik Adminer | Gateway dev pakai port 8082 |
 | 9 | PowerShell `\|` dalam token | `-e` dan `"TOKEN=2\|xxx"` dipisah jadi dua argumen |
 | 10 | `create-vite` interaktif | Buat file project manual, npm dari host |
+| 11 | API 404 intermiten (route ada tapi "could not be found") | Nginx upstream `app:9000` ambigu di network external — alias `app` round-robin ke project lain. Ganti ke `bangucup-app:9000` di `docker/nginx/default.conf` |
 
 ---
 
@@ -406,3 +413,19 @@ docker stack deploy -c docker-compose.swarm.yml bangucup
 - **Phase 7** — Role-based UI gating di frontend
 - **Phase 8** — Notifikasi WhatsApp + payment gateway
 - **Phase 9** — NOC / Grafana (opsional)
+
+---
+
+## 16. Billing Automation (Scheduler)
+
+Dijalankan `bangucup-scheduler` (dev) / `bangucup_scheduler` (swarm) via `artisan schedule:run`.
+
+| Command | Schedule | Fungsi |
+|---|---|---|
+| `billing:generate-invoices {--month=Y-m}` | daily 00:05 | Invoice bulanan idempoten per periode untuk subscription active/isolir; amount = harga paket, due_date = `billing_due_date` (clamp akhir bulan) |
+| `billing:mark-overdue` | daily 00:15 | Invoice unpaid lewat due_date → overdue |
+| `billing:auto-isolir {--dry-run}` | daily 01:00 | Isolir via MikroTik jika ada invoice overdue ≤ today − `BILLING_ISOLIR_GRACE_DAYS` (default 3); IsolirLog `triggered_by=system` |
+
+Auto-restore: `BillingService::restoreIfSettled()` dipanggil dari `InvoiceController::markPaid` dan `PaymentController::store` (payment success) — restore langganan isolir bila tidak ada sisa tagihan unpaid/overdue.
+
+> Catatan rollout: generate pertama di pertengahan bulan membuat invoice periode berjalan yang sebagian langsung lewat due_date → bisa langsung overdue. Pakai `--month=` untuk periode depan atau lunasi manual saat migrasi.
