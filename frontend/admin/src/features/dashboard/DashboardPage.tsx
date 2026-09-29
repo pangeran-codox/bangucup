@@ -341,7 +341,7 @@ export default function DashboardPage() {
               <div className="db-label" style={{ marginBottom: 16 }}>CURRENT PLAN</div>
               <div style={{ marginBottom: 24, position: 'relative', zIndex: 1 }}>
                 <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontSize: 28, fontWeight: 600, color: '#f5a524', marginBottom: 4, textShadow: '0 0 8px rgba(245,165,36,0.4)' }}>
-                  {stats?.active_subscriptions ?? 0} Langganan Aktif
+                  {stats?.active_customers ?? 0} Pelanggan Aktif
                 </div>
                 <p style={{ fontFamily: 'Inter, sans-serif', fontSize: 14, color: '#d7c3ae' }}>Fiber to the Home</p>
               </div>

@@ -14,7 +14,10 @@ const RoutersPage     = lazy(() => import('@/features/routers/RoutersPage'))
 const MonitoringPage  = lazy(() => import('@/features/monitoring/MonitoringPage'))
 const PackagesPage    = lazy(() => import('@/features/packages/PackagesPage'))
 const BillingPage     = lazy(() => import('@/features/billing/BillingPage'))
-const ComingSoonPage  = lazy(() => import('@/features/shared/ComingSoonPage'))
+const TicketsPage     = lazy(() => import('@/features/tickets/TicketsPage'))
+const DevicesPage     = lazy(() => import('@/features/devices/DevicesPage'))
+const AssetsPage      = lazy(() => import('@/features/assets/AssetsPage'))
+const SettingsPage    = lazy(() => import('@/features/settings/SettingsPage'))
 
 function PageLoader() {
   return (
@@ -30,16 +33,6 @@ function withSuspense(Component: React.LazyExoticComponent<(props: unknown) => R
       <Component />
     </Suspense>
   )
-}
-
-// Helper untuk halaman coming soon dengan props
-function comingSoon(title: string, description?: string) {
-  const Page = () => (
-    <Suspense fallback={<PageLoader />}>
-      <ComingSoonPage title={title} description={description} />
-    </Suspense>
-  )
-  return <Page />
 }
 
 export const router = createBrowserRouter([
@@ -76,11 +69,11 @@ export const router = createBrowserRouter([
           { path: '/billing',             element: withSuspense(BillingPage) },
           { path: '/billing/invoices',    element: withSuspense(BillingPage) },
           { path: '/billing/payments',    element: withSuspense(BillingPage) },
-          { path: '/tickets',             element: comingSoon('Tiket', 'Manajemen tiket support') },
-          { path: '/tickets/:id',         element: comingSoon('Detail Tiket') },
-          { path: '/assets',              element: comingSoon('Aset', 'Inventori peralatan jaringan') },
-          { path: '/devices',             element: comingSoon('Perangkat', 'Monitoring perangkat CPE/ONU') },
-          { path: '/settings',            element: comingSoon('Pengaturan', 'Konfigurasi aplikasi') },
+          { path: '/tickets',             element: withSuspense(TicketsPage) },
+          { path: '/tickets/:id',         element: withSuspense(TicketsPage) },
+          { path: '/assets',              element: withSuspense(AssetsPage) },
+          { path: '/devices',             element: withSuspense(DevicesPage) },
+          { path: '/settings',            element: withSuspense(SettingsPage) },
         ],
       },
     ],

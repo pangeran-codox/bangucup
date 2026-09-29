@@ -64,7 +64,7 @@ x-app-env: &app-env
 services:
   # ─── PHP-FPM Laravel App ────────────────────────────────────────
   bangucup_app:
-    image: iswant/bangucup:${IMAGE_TAG:-v1.0.1}
+    image: iswant/bangucup:${IMAGE_TAG:-v1.1.0}
     user: "0:0"
     entrypoint: [""]
     command: >
@@ -75,7 +75,6 @@ services:
         php artisan migrate --force --no-interaction &&
         php artisan config:cache &&
         php artisan route:cache &&
-        php artisan view:cache &&
         php-fpm
       "
     deploy:
@@ -114,7 +113,7 @@ services:
 
   # ─── Queue Worker ────────────────────────────────────────────────
   bangucup_queue:
-    image: iswant/bangucup:${IMAGE_TAG:-v1.0.1}
+    image: iswant/bangucup:${IMAGE_TAG:-v1.1.0}
     entrypoint: [""]
     command: >
       php artisan queue:work redis
@@ -152,7 +151,7 @@ services:
   # Menjalankan `php artisan schedule:run` tiap menit.
   # 1 replica saja — double execution kalau > 1.
   bangucup_scheduler:
-    image: iswant/bangucup:${IMAGE_TAG:-v1.0.1}
+    image: iswant/bangucup:${IMAGE_TAG:-v1.1.0}
     entrypoint: [""]
     command: >
       sh -c "while true; do php artisan schedule:run --no-interaction; sleep 60; done"
@@ -214,24 +213,6 @@ services:
     environment:
       <<: *app-env
 
-volumes:
-  bangucup_storage:
-    name: bangucup_storage
-    driver: local
-    # NOTE: local driver aman selama semua service di 1 worker node.
-    # Kalau scale multi-node, ganti ke driver NFS:
-    #   driver_opts:
-    #     type: nfs
-    #     o: "addr=<NFS_HOST>,rw,nfsvers=4"
-    #     device: ":/exports/bangucup/storage"
-
-  bangucup_public:
-    name: bangucup_public
-    driver: local
-    # Volume ini di-share antara bangucup_app dan bangucup_nginx.
-    # bangucup_app meng-copy isi public/ ke sini tiap start, termasuk
-    # symlink public/storage hasil `php artisan storage:link`.
-
   # ─── MikroTik Collector ──────────────────────────────────────────
   bangucup_collector:
     image: iswant/bangucup-collector:${IMAGE_TAG:-latest}
@@ -281,7 +262,7 @@ volumes:
           memory: 32M
     ports:
       - target: 8081
-        published: 8081
+        published: ${GATEWAY_PORT:-8087}
         protocol: tcp
         mode: ingress
     networks:
@@ -294,6 +275,15 @@ volumes:
       REDIS_DB:       ${REDIS_DB:-0}
       ALLOWED_ORIGIN: "*"
 
+volumes:
+  bangucup_storage:
+    name: bangucup_storage
+    driver: local
+
+  bangucup_public:
+    name: bangucup_public
+    driver: local
+
 networks:
   bangucup_network:
     name: bangucup_network
@@ -305,6 +295,3 @@ networks:
     driver: overlay
     attachable: true
     external: true
-    # shared_network adalah overlay network yang sudah ada di server
-    # (tempat postgres, redis, dll berjalan).
-    # Buat jika belum ada: docker network create -d overlay --attachable shared_network

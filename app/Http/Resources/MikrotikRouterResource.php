@@ -15,11 +15,11 @@ class MikrotikRouterResource extends JsonResource
             'host'       => $this->host,
             'api_port'   => $this->api_port,
             'username'   => $this->username,
+            'password'   => $this->password, // decrypted — only used by collector
             'is_active'  => $this->is_active,
             'notes'      => $this->notes,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
-            // password tidak pernah di-expose ke API
         ];
     }
 }

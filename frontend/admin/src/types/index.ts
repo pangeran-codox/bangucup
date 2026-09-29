@@ -212,3 +212,108 @@ export interface DashboardStats {
   total_routers: number
   online_routers: number
 }
+
+// ─── Ticket ──────────────────────────────────────────────────────
+export type TicketStatus   = 'open' | 'in_progress' | 'resolved' | 'closed'
+export type TicketPriority = 'low' | 'medium' | 'high'
+
+export interface TicketReply {
+  id: number
+  ticket_id: number
+  user_id: number
+  message: string
+  created_at: string
+  user?: User
+}
+
+export interface Ticket {
+  id: number
+  customer_id: number
+  subscription_id: number | null
+  subject: string
+  description: string | null
+  status: TicketStatus
+  priority: TicketPriority
+  assigned_to: number | null
+  resolved_at: string | null
+  created_at: string
+  customer?: Customer
+  replies?: TicketReply[]
+}
+
+export interface TicketPayload {
+  customer_id: number
+  subscription_id?: number | null
+  subject: string
+  description?: string | null
+  priority?: TicketPriority
+  assigned_to?: number | null
+}
+
+export interface TicketListParams {
+  status?: TicketStatus | ''
+  priority?: TicketPriority | ''
+  page?: number
+  per_page?: number
+}
+
+// ─── Device (CPE/ONU via GenieACS) ───────────────────────────────
+export type DeviceStatus = 'online' | 'offline' | 'unknown'
+
+export interface Device {
+  id: number
+  customer_id: number
+  genieacs_device_id: string
+  serial_number: string | null
+  brand_model: string | null
+  last_inform_at: string | null
+  last_status: DeviceStatus
+  rx_power: number | string | null
+  ssid: string | null
+  updated_at: string
+  customer?: Customer
+}
+
+export interface DeviceListParams {
+  customer_id?: number
+  status?: DeviceStatus | ''
+  page?: number
+  per_page?: number
+}
+
+// ─── Asset ───────────────────────────────────────────────────────
+export interface Asset {
+  id: number
+  name: string
+  category: string
+  sku: string | null
+  stock_qty: number
+  unit: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AssetPayload {
+  name: string
+  category: string
+  sku?: string | null
+  stock_qty?: number
+  unit?: string | null
+}
+
+export interface AssetMovement {
+  id: number
+  asset_id: number
+  type: 'in' | 'out'
+  qty: number
+  subscription_id: number | null
+  note: string | null
+  created_at: string
+}
+
+export interface AssetListParams {
+  search?: string
+  category?: string
+  page?: number
+  per_page?: number
+}

@@ -48,6 +48,7 @@ func Collect(r Router) RouterSnapshot {
 	addr := fmt.Sprintf("%s:%d", r.Host, r.APIPort)
 	client, err := ros.DialTimeout(addr, r.Username, r.Password, 5*time.Second)
 	if err != nil {
+		fmt.Printf("[mikrotik] dial %s failed: %v\n", addr, err)
 		return snap
 	}
 	defer client.Close()
