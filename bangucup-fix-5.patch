@@ -1,0 +1,1317 @@
+diff --git a/app/Http/Controllers/Api/InvoiceController.php b/app/Http/Controllers/Api/InvoiceController.php
+index 557a283..d903d4f 100644
+--- a/app/Http/Controllers/Api/InvoiceController.php
++++ b/app/Http/Controllers/Api/InvoiceController.php
+@@ -54,7 +54,10 @@ class InvoiceController extends ApiController
+ 
+     public function store(StoreInvoiceRequest $request): JsonResponse
+     {
+-        $invoice = Invoice::create($request->validated());
++        $data = $request->validated();
++        $data['discount_amount'] = $data['discount_amount'] ?? 0;
++
++        $invoice = Invoice::create($data);
+         $invoice->load('customer');
+ 
+         return $this->created(new InvoiceResource($invoice), 'Invoice berhasil dibuat');
+@@ -92,6 +95,10 @@ class InvoiceController extends ApiController
+             ]);
+         }
+ 
++        if (array_key_exists('discount_amount', $data) && $data['discount_amount'] === null) {
++            $data['discount_amount'] = 0; // kolom NOT NULL
++        }
++
+         $invoice->update($data);
+ 
+         return $this->success(new InvoiceResource($invoice), 'Invoice berhasil diperbarui');
+diff --git a/app/Http/Controllers/Api/SubscriptionController.php b/app/Http/Controllers/Api/SubscriptionController.php
+index aaa434e..87eaafa 100644
+--- a/app/Http/Controllers/Api/SubscriptionController.php
++++ b/app/Http/Controllers/Api/SubscriptionController.php
+@@ -50,7 +50,13 @@ class SubscriptionController extends ApiController
+ 
+     public function store(StoreSubscriptionRequest $request): JsonResponse
+     {
+-        $subscription = Subscription::create($request->validated());
++        $data = $request->validated();
++
++        // Kolom ini NOT NULL di database, tetapi boleh kosong di form: beri nilai bawaan.
++        $data['started_at']       = $data['started_at'] ?? today()->toDateString();
++        $data['billing_due_date'] = $data['billing_due_date'] ?? 1;
++
++        $subscription = Subscription::create($data);
+         $subscription->load(['customer', 'package']);
+ 
+         return $this->created(new SubscriptionResource($subscription), 'Langganan berhasil ditambahkan');
+@@ -74,7 +80,7 @@ class SubscriptionController extends ApiController
+             'mikrotik_router_id' => ['sometimes', 'nullable', 'exists:mikrotik_routers,id'],
+             'port_number'        => ['sometimes', 'nullable', 'integer', 'min:1'],
+             'pppoe_password'     => ['sometimes', 'string', 'min:1', 'max:255'],
+-            'billing_due_date'   => ['sometimes', 'nullable', 'integer', 'min:1', 'max:31'],
++            'billing_due_date'   => ['sometimes', 'integer', 'min:1', 'max:31'],
+             'status'             => ['sometimes', Rule::in(['terminated'])],
+             'ended_at'           => ['sometimes', 'nullable', 'date'],
+         ]);
+diff --git a/app/Models/Subscription.php b/app/Models/Subscription.php
+index 35b68c9..0e0e95b 100644
+--- a/app/Models/Subscription.php
++++ b/app/Models/Subscription.php
+@@ -15,6 +15,7 @@ class Subscription extends Model
+         'customer_id',
+         'package_id',
+         'odp_id',
++        'mikrotik_router_id',
+         'port_number',
+         'pppoe_username',
+         'pppoe_password',
+diff --git a/phpunit.pgsql.xml b/phpunit.pgsql.xml
+new file mode 100644
+index 0000000..865b5aa
+--- /dev/null
++++ b/phpunit.pgsql.xml
+@@ -0,0 +1,46 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!--
++    Setelan test untuk Bangucup (PostgreSQL). Salin menjadi phpunit.xml:
++        copy /Y phpunit.pgsql.xml phpunit.xml
++
++    Atribut force="true" WAJIB untuk nilai yang bisa tertimpa environment container
++    (DB_DATABASE, cache, dst.). Tanpa itu, test bisa berjalan di database development
++    dan RefreshDatabase akan menghapusnya. tests/ApiTestCase.php menolak berjalan bila
++    nama database tidak berakhiran "_test".
++-->
++<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
++         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
++         bootstrap="vendor/autoload.php"
++         colors="true"
++>
++    <testsuites>
++        <testsuite name="Unit">
++            <directory>tests/Unit</directory>
++        </testsuite>
++        <testsuite name="Feature">
++            <directory>tests/Feature</directory>
++        </testsuite>
++    </testsuites>
++    <source>
++        <include>
++            <directory>app</directory>
++        </include>
++    </source>
++    <php>
++        <env name="APP_ENV" value="testing" force="true"/>
++        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
++        <env name="BCRYPT_ROUNDS" value="4"/>
++        <env name="BROADCAST_CONNECTION" value="null"/>
++        <env name="CACHE_STORE" value="array" force="true"/>
++        <env name="DB_CONNECTION" value="pgsql" force="true"/>
++        <env name="DB_DATABASE" value="bangucup_test" force="true"/>
++        <env name="DB_URL" value="" force="true"/>
++        <env name="MAIL_MAILER" value="array"/>
++        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
++        <env name="SESSION_DRIVER" value="array" force="true"/>
++        <env name="WS_TICKET_SECRET" value="rahasia-test-rahasia-test-rahasia-test-1234" force="true"/>
++        <env name="PULSE_ENABLED" value="false"/>
++        <env name="TELESCOPE_ENABLED" value="false"/>
++        <env name="NIGHTWATCH_ENABLED" value="false"/>
++    </php>
++</phpunit>
+diff --git a/tests/ApiTestCase.php b/tests/ApiTestCase.php
+new file mode 100644
+index 0000000..c98851d
+--- /dev/null
++++ b/tests/ApiTestCase.php
+@@ -0,0 +1,176 @@
++<?php
++
++namespace Tests;
++
++use App\Models\Customer;
++use App\Models\Invoice;
++use App\Models\MikrotikRouter;
++use App\Models\Odp;
++use App\Models\Package;
++use App\Models\Subscription;
++use App\Models\User;
++use Database\Seeders\RolePermissionSeeder;
++use Illuminate\Database\QueryException;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Illuminate\Support\Facades\DB;
++use Illuminate\Support\Str;
++use Spatie\Permission\PermissionRegistrar;
++
++/**
++ * Dasar semua test API Bangucup.
++ *
++ * Memakai PostgreSQL sungguhan (migration memakai CHECK dan indeks parsial, jadi SQLite tidak cukup)
++ * dan menolak berjalan di database yang namanya tidak berakhiran "_test".
++ */
++abstract class ApiTestCase extends TestCase
++{
++    use RefreshDatabase;
++
++    protected const ROUTER_SECRET = 'rahasia-router-123';
++
++    protected function setUp(): void
++    {
++        // Pengaman 1: cek variabel environment SEBELUM aplikasi menyala dan migrate:fresh berjalan.
++        $database = (string) ($_ENV['DB_DATABASE'] ?? $_SERVER['DB_DATABASE'] ?? getenv('DB_DATABASE') ?: '');
++
++        if (! str_ends_with($database, '_test')) {
++            throw new \RuntimeException(
++                "Test DIHENTIKAN: DB_DATABASE='{$database}' bukan database test (harus berakhiran _test). "
++                .'Salin phpunit.pgsql.xml menjadi phpunit.xml dan buat database bangucup_test.'
++            );
++        }
++
++        parent::setUp();
++
++        $this->seed(RolePermissionSeeder::class);
++        app(PermissionRegistrar::class)->forgetCachedPermissions();
++    }
++
++    /** Pengaman 2: cek koneksi yang benar-benar dipakai sebelum database dihapus. */
++    protected function beforeRefreshingDatabase()
++    {
++        $name = (string) DB::connection()->getDatabaseName();
++
++        if (! str_ends_with($name, '_test')) {
++            throw new \RuntimeException("Test DIHENTIKAN: koneksi database '{$name}' bukan database test.");
++        }
++    }
++
++    // ── Autentikasi ──────────────────────────────────────────────────────────
++
++    protected function userWithRole(string $role, array $attributes = []): User
++    {
++        $user = User::create($attributes + [
++            'name'     => ucfirst($role).' Test',
++            'email'    => $role.'-'.Str::lower(Str::random(6)).'@test.local',
++            'password' => 'Rahasia12345',
++        ]);
++
++        $user->assignRole($role);
++
++        return $user;
++    }
++
++    /** Pakai token Sanctum asli (bukan mock) agar ability dan kedaluwarsa teruji apa adanya. */
++    protected function asUser(User $user, array $abilities = ['*']): static
++    {
++        $this->app['auth']->forgetGuards();
++
++        return $this->withHeaders([
++            'Authorization' => 'Bearer '.$user->createToken('test', $abilities)->plainTextToken,
++        ]);
++    }
++
++    protected function asRole(string $role): User
++    {
++        $user = $this->userWithRole($role);
++        $this->asUser($user);
++
++        return $user;
++    }
++
++    // ── Data uji ─────────────────────────────────────────────────────────────
++
++    protected function makeCustomer(array $o = []): Customer
++    {
++        return Customer::create($o + [
++            'name'    => 'Budi Test',
++            'phone'   => '081234567890',
++            'address' => 'Jl. Contoh No. 1',
++            'status'  => 'active',
++        ]);
++    }
++
++    protected function makePackage(array $o = []): Package
++    {
++        return Package::create($o + [
++            'name'                  => 'Paket 10 Mbps',
++            'speed_mbps'            => 10,
++            'price'                 => 150000,
++            'mikrotik_profile_name' => '10M',
++        ]);
++    }
++
++    protected function makeRouter(array $o = []): MikrotikRouter
++    {
++        return MikrotikRouter::create($o + [
++            'name'     => 'Router Test',
++            'host'     => '10.255.255.1',
++            'api_port' => 8728,
++            'username' => 'api',
++            'password' => self::ROUTER_SECRET,
++        ]);
++    }
++
++    protected function makeOdp(int $ports = 8): Odp
++    {
++        return Odp::create(['name' => 'ODP-'.Str::upper(Str::random(4)), 'total_ports' => $ports]);
++    }
++
++    protected function makeSubscription(?Customer $customer = null, array $o = []): Subscription
++    {
++        $customer ??= $this->makeCustomer();
++
++        return Subscription::create($o + [
++            'customer_id'      => $customer->id,
++            'package_id'       => $this->makePackage()->id,
++            'pppoe_username'   => 'user'.Str::lower(Str::random(8)),
++            'pppoe_password'   => 'pw-'.Str::random(6),
++            'billing_due_date' => 1,
++            'status'           => 'active',
++            'started_at'       => today()->toDateString(),
++        ]);
++    }
++
++    protected function makeInvoice(Subscription $subscription, array $o = []): Invoice
++    {
++        return Invoice::create($o + [
++            'customer_id'     => $subscription->customer_id,
++            'subscription_id' => $subscription->id,
++            'type'            => 'monthly',
++            'amount'          => 150000,
++            'discount_amount' => 0,
++            'due_date'        => today()->addDays(10)->toDateString(),
++            'status'          => 'unpaid',
++        ]);
++    }
++
++    // ── Pembantu assertion ───────────────────────────────────────────────────
++
++    /**
++     * Pastikan database menolak operasi ini. Dibungkus DB::transaction (savepoint) supaya
++     * kegagalan satu statement tidak menggagalkan transaksi test di PostgreSQL.
++     */
++    protected function assertDatabaseRejects(callable $operation, string $message): void
++    {
++        try {
++            DB::transaction($operation);
++        } catch (QueryException) {
++            $this->addToAssertionCount(1);
++
++            return;
++        }
++
++        $this->fail($message);
++    }
++}
+diff --git a/tests/Feature/AuthorizationTest.php b/tests/Feature/AuthorizationTest.php
+new file mode 100644
+index 0000000..4796b76
+--- /dev/null
++++ b/tests/Feature/AuthorizationTest.php
+@@ -0,0 +1,170 @@
++<?php
++
++namespace Tests\Feature;
++
++use Laravel\Sanctum\PersonalAccessToken;
++use Tests\ApiTestCase;
++
++class AuthorizationTest extends ApiTestCase
++{
++    public function test_tanpa_login_semua_endpoint_ditolak(): void
++    {
++        $this->getJson('/api/customers')->assertUnauthorized();
++        $this->getJson('/api/users')->assertUnauthorized();
++        $this->getJson('/api/internal/routers')->assertUnauthorized();
++    }
++
++    public function test_teknisi_tidak_bisa_membuat_user(): void
++    {
++        $this->asRole('teknisi');
++
++        $this->postJson('/api/users', [
++            'name' => 'Penyusup', 'email' => 'x@test.local', 'password' => 'Rahasia12345',
++        ])->assertForbidden();
++    }
++
++    public function test_teknisi_tidak_bisa_naik_jabatan_jadi_super_admin(): void
++    {
++        $teknisi = $this->asRole('teknisi');
++
++        $this->postJson("/api/users/{$teknisi->id}/roles", ['roles' => ['super_admin']])->assertForbidden();
++
++        $this->assertFalse($teknisi->fresh()->hasRole('super_admin'));
++    }
++
++    public function test_teknisi_tidak_bisa_melihat_data_keuangan_tapi_bisa_tiket(): void
++    {
++        $this->asRole('teknisi');
++
++        $this->getJson('/api/invoices')->assertForbidden();
++        $this->getJson('/api/payments')->assertForbidden();
++        $this->getJson('/api/tickets')->assertOk();
++    }
++
++    public function test_staff_tidak_bisa_menghapus_pelanggan_atau_mengelola_router(): void
++    {
++        $this->asRole('staff');
++        $customer = $this->makeCustomer();
++
++        $this->deleteJson("/api/customers/{$customer->id}")->assertForbidden();
++        $this->getJson('/api/routers')->assertForbidden();
++        $this->assertDatabaseHas('customers', ['id' => $customer->id]);
++    }
++
++    public function test_staff_bisa_membaca_paket_dan_odp_untuk_form(): void
++    {
++        $this->asRole('staff');
++
++        $this->getJson('/api/packages')->assertOk();
++        $this->getJson('/api/odps')->assertOk();
++    }
++
++    public function test_admin_tidak_bisa_menetapkan_role_saat_membuat_user(): void
++    {
++        $this->asRole('admin');
++
++        $this->postJson('/api/users', [
++            'name' => 'Baru', 'email' => 'baru@test.local', 'password' => 'Rahasia12345', 'roles' => ['staff'],
++        ])->assertForbidden();
++
++        $this->assertDatabaseMissing('users', ['email' => 'baru@test.local']);
++    }
++
++    public function test_admin_tidak_bisa_mengubah_akun_super_admin(): void
++    {
++        $superAdmin = $this->userWithRole('super_admin');
++        $this->asRole('admin');
++
++        $this->putJson("/api/users/{$superAdmin->id}", ['name' => 'Diganti'])->assertForbidden();
++        $this->deleteJson("/api/users/{$superAdmin->id}")->assertForbidden();
++
++        $this->assertNotSame('Diganti', $superAdmin->fresh()->name);
++    }
++
++    public function test_super_admin_bisa_membuat_user_dengan_role(): void
++    {
++        $this->asRole('super_admin');
++
++        $this->postJson('/api/users', [
++            'name' => 'Staf Baru', 'email' => 'staf@test.local', 'password' => 'Rahasia12345', 'roles' => ['staff'],
++        ])->assertCreated();
++
++        $this->assertTrue(\App\Models\User::where('email', 'staf@test.local')->firstOrFail()->hasRole('staff'));
++    }
++
++    public function test_super_admin_terakhir_tidak_bisa_dicabut_rolenya(): void
++    {
++        $superAdmin = $this->asRole('super_admin');
++
++        $this->postJson("/api/users/{$superAdmin->id}/roles", ['roles' => ['staff']])->assertStatus(422);
++
++        $this->assertTrue($superAdmin->fresh()->hasRole('super_admin'));
++    }
++
++    public function test_login_dibatasi_lima_percobaan_per_menit(): void
++    {
++        for ($i = 0; $i < 5; $i++) {
++            $this->postJson('/api/auth/login', ['email' => 'tidak@ada.test', 'password' => 'salah'])
++                ->assertUnauthorized();
++        }
++
++        $this->postJson('/api/auth/login', ['email' => 'tidak@ada.test', 'password' => 'salah'])
++            ->assertStatus(429);
++    }
++
++    public function test_token_login_memiliki_masa_berlaku(): void
++    {
++        $user = $this->userWithRole('staff', ['email' => 'staf@test.local']);
++
++        $this->postJson('/api/auth/login', ['email' => $user->email, 'password' => 'Rahasia12345'])
++            ->assertOk();
++
++        $token = PersonalAccessToken::where('tokenable_id', $user->id)->latest('id')->firstOrFail();
++
++        $this->assertNotNull($token->expires_at, 'Token login harus punya expires_at.');
++        $this->assertTrue($token->expires_at->isFuture());
++    }
++
++    public function test_password_router_tidak_pernah_ada_di_respons_api_biasa(): void
++    {
++        $router = $this->makeRouter();
++        $this->asRole('super_admin');
++
++        $this->getJson('/api/routers')->assertOk()
++            ->assertDontSee(self::ROUTER_SECRET);
++
++        $this->getJson("/api/routers/{$router->id}")->assertOk()
++            ->assertDontSee(self::ROUTER_SECRET);
++    }
++
++    public function test_endpoint_internal_hanya_menerima_token_collector(): void
++    {
++        $this->makeRouter();
++
++        // Token login biasa (ability *) milik super_admin ditolak.
++        $superAdmin = $this->userWithRole('super_admin');
++        $this->asUser($superAdmin)->getJson('/api/internal/routers')->assertForbidden();
++
++        // Token dengan ability routers:collect diterima dan membawa password untuk collector.
++        $collector = \App\Models\User::create([
++            'name' => 'Collector', 'email' => 'collector@test.local', 'password' => 'Rahasia12345',
++        ]);
++
++        $this->asUser($collector, ['routers:collect'])
++            ->getJson('/api/internal/routers')
++            ->assertOk()
++            ->assertSee(self::ROUTER_SECRET);
++    }
++
++    public function test_token_collector_tidak_bisa_memakai_endpoint_lain(): void
++    {
++        $collector = \App\Models\User::create([
++            'name' => 'Collector', 'email' => 'collector@test.local', 'password' => 'Rahasia12345',
++        ]);
++
++        $this->asUser($collector, ['routers:collect']);
++
++        $this->getJson('/api/customers')->assertForbidden();
++        $this->getJson('/api/routers')->assertForbidden();
++    }
++}
+diff --git a/tests/Feature/AutoIsolirTest.php b/tests/Feature/AutoIsolirTest.php
+new file mode 100644
+index 0000000..d695ce2
+--- /dev/null
++++ b/tests/Feature/AutoIsolirTest.php
+@@ -0,0 +1,227 @@
++<?php
++
++namespace Tests\Feature;
++
++use App\Models\Invoice;
++use App\Models\IsolirLog;
++use App\Models\MikrotikRouter;
++use App\Models\Subscription;
++use App\Services\MikrotikService;
++use Mockery\MockInterface;
++use Tests\ApiTestCase;
++
++class AutoIsolirTest extends ApiTestCase
++{
++    private MikrotikRouter $router;
++
++    protected function setUp(): void
++    {
++        parent::setUp();
++
++        $this->router = $this->makeRouter();
++    }
++
++    /** Buat $count langganan aktif dengan tagihan overdue 10 hari (melewati masa tenggang 3 hari). */
++    private function overdueSubscriptions(int $count): void
++    {
++        for ($i = 0; $i < $count; $i++) {
++            $subscription = $this->makeSubscription(null, ['mikrotik_router_id' => $this->router->id]);
++            $this->makeInvoice($subscription, [
++                'status'   => 'overdue',
++                'due_date' => today()->subDays(10)->toDateString(),
++            ]);
++        }
++    }
++
++    private function isolirCount(): int
++    {
++        return Subscription::where('status', 'isolir')->count();
++    }
++
++    public function test_dry_run_tidak_menyentuh_router_maupun_data(): void
++    {
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldNotReceive('testConnection');
++            $mock->shouldNotReceive('isolir');
++        });
++        $this->overdueSubscriptions(3);
++
++        $this->artisan('billing:auto-isolir', ['--dry-run' => true])->assertExitCode(0);
++
++        $this->assertSame(0, $this->isolirCount());
++        $this->assertSame(0, IsolirLog::count());
++    }
++
++    public function test_semua_diisolir_dan_tercatat_bila_di_bawah_batas(): void
++    {
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldReceive('testConnection')->once()->andReturn(true);
++            $mock->shouldReceive('isolir')->twice()->andReturn(true);
++        });
++        $this->overdueSubscriptions(2);
++
++        $this->artisan('billing:auto-isolir')->assertExitCode(0);
++
++        $this->assertSame(2, $this->isolirCount());
++        $this->assertSame(2, IsolirLog::where('action', 'isolir')->where('triggered_by', 'system')->count());
++    }
++
++    public function test_di_atas_batas_pengaman_seluruh_eksekusi_dibatalkan(): void
++    {
++        config(['billing.isolir_max_per_run' => 2]);
++
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldNotReceive('testConnection');
++            $mock->shouldNotReceive('isolir');
++        });
++        $this->overdueSubscriptions(3);
++
++        $this->artisan('billing:auto-isolir')->assertExitCode(1);
++
++        $this->assertSame(0, $this->isolirCount());
++        $this->assertSame(0, IsolirLog::count());
++    }
++
++    public function test_limit_mengisolir_sebagian_walau_di_atas_batas(): void
++    {
++        config(['billing.isolir_max_per_run' => 2]);
++
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldReceive('testConnection')->once()->andReturn(true);
++            $mock->shouldReceive('isolir')->once()->andReturn(true);
++        });
++        $this->overdueSubscriptions(3);
++
++        $this->artisan('billing:auto-isolir', ['--limit' => 1])->assertExitCode(0);
++
++        $this->assertSame(1, $this->isolirCount());
++        $this->assertSame(1, IsolirLog::count());
++    }
++
++    public function test_force_melewati_batas_pengaman(): void
++    {
++        config(['billing.isolir_max_per_run' => 1]);
++
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldReceive('testConnection')->once()->andReturn(true);
++            $mock->shouldReceive('isolir')->twice()->andReturn(true);
++        });
++        $this->overdueSubscriptions(2);
++
++        $this->artisan('billing:auto-isolir', ['--force' => true])->assertExitCode(0);
++
++        $this->assertSame(2, $this->isolirCount());
++    }
++
++    public function test_limit_tidak_valid_ditolak(): void
++    {
++        $this->overdueSubscriptions(1);
++
++        $this->artisan('billing:auto-isolir', ['--limit' => 0])->assertExitCode(1);
++
++        $this->assertSame(0, $this->isolirCount());
++    }
++
++    public function test_router_tidak_terjangkau_dilewati_tanpa_mengubah_data(): void
++    {
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldReceive('testConnection')->once()->andReturn(false);
++            $mock->shouldNotReceive('isolir');
++        });
++        $this->overdueSubscriptions(3);
++
++        $this->artisan('billing:auto-isolir')->assertExitCode(0);
++
++        $this->assertSame(0, $this->isolirCount());
++        $this->assertSame(0, IsolirLog::count());
++    }
++
++    public function test_gagal_di_mikrotik_mengembalikan_status_gagal_dan_data_tetap_aktif(): void
++    {
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldReceive('testConnection')->once()->andReturn(true);
++            $mock->shouldReceive('isolir')->once()->andReturn(false);
++        });
++        $this->overdueSubscriptions(1);
++
++        $this->artisan('billing:auto-isolir')->assertExitCode(1);
++
++        $this->assertSame(0, $this->isolirCount());
++        $this->assertSame(0, IsolirLog::count());
++    }
++
++    public function test_pemutus_menghentikan_router_yang_gagal_berturut_turut(): void
++    {
++        // 3 kegagalan beruntun pada satu router -> sisa langganan router itu dilewati.
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldReceive('testConnection')->once()->andReturn(true);
++            $mock->shouldReceive('isolir')->times(3)->andReturn(false);
++        });
++        $this->overdueSubscriptions(6);
++
++        $this->artisan('billing:auto-isolir', ['--force' => true])->assertExitCode(1);
++
++        $this->assertSame(0, $this->isolirCount());
++    }
++
++    public function test_pelanggan_yang_baru_lunas_saat_proses_berjalan_dilewati(): void
++    {
++        // Simulasi: pelanggan membayar setelah daftar kandidat diambil, sebelum isolir dieksekusi.
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldReceive('testConnection')->once()->andReturnUsing(function () {
++                Invoice::query()->update(['status' => 'paid', 'paid_at' => now()]);
++
++                return true;
++            });
++            $mock->shouldNotReceive('isolir');
++        });
++        $this->overdueSubscriptions(2);
++
++        $this->artisan('billing:auto-isolir')->assertExitCode(0);
++
++        $this->assertSame(0, $this->isolirCount());
++    }
++
++    public function test_hanya_langganan_aktif_dengan_overdue_lewat_masa_tenggang_yang_dipilih(): void
++    {
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldNotReceive('testConnection');
++            $mock->shouldNotReceive('isolir');
++        });
++
++        // a) Tagihan belum overdue (unpaid)
++        $a = $this->makeSubscription(null, ['mikrotik_router_id' => $this->router->id]);
++        $this->makeInvoice($a, ['status' => 'unpaid', 'due_date' => today()->subDays(10)->toDateString()]);
++
++        // b) Overdue tetapi masih dalam masa tenggang (kemarin)
++        $b = $this->makeSubscription(null, ['mikrotik_router_id' => $this->router->id]);
++        $this->makeInvoice($b, ['status' => 'overdue', 'due_date' => today()->subDay()->toDateString()]);
++
++        // c) Sudah terisolir
++        $c = $this->makeSubscription(null, ['mikrotik_router_id' => $this->router->id, 'status' => 'isolir']);
++        $this->makeInvoice($c, ['status' => 'overdue', 'due_date' => today()->subDays(10)->toDateString()]);
++
++        // d) Sudah berhenti berlangganan
++        $d = $this->makeSubscription(null, ['mikrotik_router_id' => $this->router->id, 'status' => 'terminated']);
++        $this->makeInvoice($d, ['status' => 'overdue', 'due_date' => today()->subDays(10)->toDateString()]);
++
++        $this->artisan('billing:auto-isolir')->assertExitCode(0);
++
++        $this->assertSame(0, IsolirLog::count());
++    }
++
++    public function test_langganan_tanpa_router_dilewati(): void
++    {
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldNotReceive('testConnection');
++            $mock->shouldNotReceive('isolir');
++        });
++
++        $subscription = $this->makeSubscription();
++        $this->makeInvoice($subscription, ['status' => 'overdue', 'due_date' => today()->subDays(10)->toDateString()]);
++
++        $this->artisan('billing:auto-isolir')->assertExitCode(0);
++
++        $this->assertSame('active', $subscription->fresh()->status);
++    }
++}
+diff --git a/tests/Feature/IntegrityTest.php b/tests/Feature/IntegrityTest.php
+new file mode 100644
+index 0000000..9d63e3a
+--- /dev/null
++++ b/tests/Feature/IntegrityTest.php
+@@ -0,0 +1,323 @@
++<?php
++
++namespace Tests\Feature;
++
++use App\Models\Asset;
++use App\Models\Payment;
++use Illuminate\Support\Facades\DB;
++use Tests\ApiTestCase;
++
++class IntegrityTest extends ApiTestCase
++{
++    // ── Langganan dibuat lewat API ────────────────────────────────────────────
++
++    public function test_langganan_lewat_api_menyimpan_router_dan_memakai_nilai_bawaan(): void
++    {
++        $this->asRole('staff');
++        $customer = $this->makeCustomer();
++        $package  = $this->makePackage();
++        $router   = $this->makeRouter();
++
++        // Tanpa started_at dan billing_due_date: kolom keduanya NOT NULL di database.
++        $this->postJson('/api/subscriptions', [
++            'customer_id'        => $customer->id,
++            'package_id'         => $package->id,
++            'mikrotik_router_id' => $router->id,
++            'pppoe_username'     => 'pelanggan01',
++            'pppoe_password'     => 'rahasia-pppoe',
++        ])->assertCreated();
++
++        $this->assertDatabaseHas('subscriptions', [
++            'pppoe_username'     => 'pelanggan01',
++            'mikrotik_router_id' => $router->id,
++            'billing_due_date'   => 1,
++        ]);
++        $this->assertNotNull(\App\Models\Subscription::where('pppoe_username', 'pelanggan01')->value('started_at'));
++    }
++
++    public function test_port_odp_yang_sudah_dipakai_ditolak(): void
++    {
++        $this->asRole('staff');
++        $odp = $this->makeOdp(8);
++        $this->makeSubscription(null, ['odp_id' => $odp->id, 'port_number' => 3]);
++
++        $this->postJson('/api/subscriptions', [
++            'customer_id'    => $this->makeCustomer()->id,
++            'package_id'     => $this->makePackage()->id,
++            'odp_id'         => $odp->id,
++            'port_number'    => 3,
++            'pppoe_username' => 'bentrok01',
++            'pppoe_password' => 'x',
++        ])->assertStatus(422)->assertJsonValidationErrors('port_number');
++    }
++
++    public function test_port_melebihi_kapasitas_odp_ditolak(): void
++    {
++        $this->asRole('staff');
++        $odp = $this->makeOdp(8);
++
++        $this->postJson('/api/subscriptions', [
++            'customer_id'    => $this->makeCustomer()->id,
++            'package_id'     => $this->makePackage()->id,
++            'odp_id'         => $odp->id,
++            'port_number'    => 9,
++            'pppoe_username' => 'kelebihan01',
++            'pppoe_password' => 'x',
++        ])->assertStatus(422)->assertJsonValidationErrors('port_number');
++    }
++
++    public function test_port_milik_langganan_terminated_bisa_dipakai_lagi(): void
++    {
++        $this->asRole('staff');
++        $odp = $this->makeOdp(8);
++        $this->makeSubscription(null, ['odp_id' => $odp->id, 'port_number' => 3, 'status' => 'terminated']);
++
++        $this->postJson('/api/subscriptions', [
++            'customer_id'    => $this->makeCustomer()->id,
++            'package_id'     => $this->makePackage()->id,
++            'odp_id'         => $odp->id,
++            'port_number'    => 3,
++            'pppoe_username' => 'pakai-ulang01',
++            'pppoe_password' => 'x',
++        ])->assertCreated();
++    }
++
++    public function test_update_langganan_tidak_boleh_merebut_port_orang_lain(): void
++    {
++        $this->asRole('super_admin');
++        $odp = $this->makeOdp(8);
++        $this->makeSubscription(null, ['odp_id' => $odp->id, 'port_number' => 1]);
++        $kedua = $this->makeSubscription(null, ['odp_id' => $odp->id, 'port_number' => 2]);
++
++        $this->putJson("/api/subscriptions/{$kedua->id}", ['port_number' => 1])
++            ->assertStatus(422)
++            ->assertJsonValidationErrors('port_number');
++    }
++
++    public function test_status_isolir_tidak_bisa_diubah_lewat_update_biasa(): void
++    {
++        $this->asRole('super_admin');
++        $subscription = $this->makeSubscription();
++
++        $this->putJson("/api/subscriptions/{$subscription->id}", ['status' => 'isolir'])->assertStatus(422);
++
++        $this->assertSame('active', $subscription->fresh()->status);
++    }
++
++    // ── Invoice lewat API ────────────────────────────────────────────────────
++
++    public function test_invoice_bulanan_dobel_untuk_periode_sama_ditolak(): void
++    {
++        $this->asRole('staff');
++        $subscription = $this->makeSubscription();
++
++        $payload = [
++            'customer_id'     => $subscription->customer_id,
++            'subscription_id' => $subscription->id,
++            'type'            => 'monthly',
++            'period_month'    => '2026-10',          // format Y-m dari form dinormalkan jadi 2026-10-01
++            'amount'          => 150000,
++            'due_date'        => '2026-10-10',
++        ];
++
++        $this->postJson('/api/invoices', $payload)->assertCreated();
++        $this->assertDatabaseHas('invoices', ['subscription_id' => $subscription->id, 'period_month' => '2026-10-01']);
++
++        $this->postJson('/api/invoices', $payload)
++            ->assertStatus(422)
++            ->assertJsonValidationErrors('period_month');
++    }
++
++    public function test_invoice_dengan_diskon_melebihi_nominal_ditolak(): void
++    {
++        $this->asRole('staff');
++        $subscription = $this->makeSubscription();
++
++        $this->postJson('/api/invoices', [
++            'customer_id'     => $subscription->customer_id,
++            'subscription_id' => $subscription->id,
++            'type'            => 'other',
++            'amount'          => 1000,
++            'discount_amount' => 2000,
++            'due_date'        => '2026-10-10',
++        ])->assertStatus(422)->assertJsonValidationErrors('discount_amount');
++    }
++
++    public function test_diskon_kosong_diperlakukan_nol_bukan_error(): void
++    {
++        $this->asRole('staff');
++        $subscription = $this->makeSubscription();
++
++        $this->postJson('/api/invoices', [
++            'customer_id'     => $subscription->customer_id,
++            'subscription_id' => $subscription->id,
++            'type'            => 'other',
++            'amount'          => 50000,
++            'discount_amount' => null,
++            'due_date'        => '2026-10-10',
++        ])->assertCreated();
++
++        $this->assertDatabaseHas('invoices', ['subscription_id' => $subscription->id, 'discount_amount' => 0]);
++    }
++
++    // ── Penghapusan data yang punya riwayat ──────────────────────────────────
++
++    public function test_pelanggan_dengan_langganan_tidak_bisa_dihapus(): void
++    {
++        $this->asRole('super_admin');
++        $customer = $this->makeCustomer();
++        $this->makeSubscription($customer);
++
++        $this->deleteJson("/api/customers/{$customer->id}")->assertStatus(422);
++
++        $this->assertDatabaseHas('customers', ['id' => $customer->id]);
++    }
++
++    public function test_pelanggan_tanpa_riwayat_boleh_dihapus(): void
++    {
++        $this->asRole('super_admin');
++        $customer = $this->makeCustomer();
++
++        $this->deleteJson("/api/customers/{$customer->id}")->assertNoContent();
++
++        $this->assertDatabaseMissing('customers', ['id' => $customer->id]);
++    }
++
++    public function test_langganan_dengan_tagihan_tidak_bisa_dihapus(): void
++    {
++        $this->asRole('super_admin');
++        $subscription = $this->makeSubscription();
++        $this->makeInvoice($subscription);
++
++        $this->deleteJson("/api/subscriptions/{$subscription->id}")->assertStatus(422);
++
++        $this->assertDatabaseHas('subscriptions', ['id' => $subscription->id]);
++    }
++
++    public function test_invoice_yang_punya_pembayaran_tidak_bisa_dihapus(): void
++    {
++        $this->asRole('super_admin');
++        $invoice = $this->makeInvoice($this->makeSubscription());
++        Payment::create(['invoice_id' => $invoice->id, 'gateway' => 'manual', 'amount' => 1000, 'status' => 'pending']);
++
++        $this->deleteJson("/api/invoices/{$invoice->id}")->assertStatus(422);
++
++        $this->assertDatabaseHas('invoices', ['id' => $invoice->id]);
++    }
++
++    // ── Aset ─────────────────────────────────────────────────────────────────
++
++    public function test_mutasi_keluar_melebihi_stok_ditolak(): void
++    {
++        $this->asRole('teknisi');
++        $asset = Asset::create(['name' => 'Kabel Drop', 'category' => 'kabel', 'stock_qty' => 2]);
++
++        $this->postJson("/api/assets/{$asset->id}/movements", ['type' => 'out', 'qty' => 5])
++            ->assertStatus(422)
++            ->assertJsonValidationErrors('qty');
++
++        $this->assertSame(2, $asset->fresh()->stock_qty);
++        $this->assertDatabaseCount('asset_movements', 0);
++    }
++
++    public function test_mutasi_keluar_dalam_batas_stok_mengurangi_stok(): void
++    {
++        $this->asRole('teknisi');
++        $asset = Asset::create(['name' => 'Konektor', 'category' => 'aksesoris', 'stock_qty' => 10]);
++
++        $this->postJson("/api/assets/{$asset->id}/movements", ['type' => 'out', 'qty' => 4])->assertCreated();
++
++        $this->assertSame(6, $asset->fresh()->stock_qty);
++    }
++
++    // ── Penjaga di level database (tetap berlaku walau aplikasi lupa mengecek) ──
++
++    public function test_db_menolak_invoice_bulanan_dobel(): void
++    {
++        $subscription = $this->makeSubscription();
++        $this->makeInvoice($subscription, ['period_month' => '2026-09-01']);
++
++        $this->assertDatabaseRejects(
++            fn () => $this->makeInvoice($subscription, ['period_month' => '2026-09-01']),
++            'Invoice bulanan dobel seharusnya ditolak unique index.'
++        );
++    }
++
++    public function test_db_mengizinkan_banyak_invoice_non_bulanan_atau_tanpa_periode(): void
++    {
++        $subscription = $this->makeSubscription();
++
++        $this->makeInvoice($subscription, ['type' => 'installation']);
++        $this->makeInvoice($subscription, ['type' => 'installation']);
++        $this->makeInvoice($subscription, ['type' => 'monthly', 'period_month' => null]);
++        $this->makeInvoice($subscription, ['type' => 'monthly', 'period_month' => null]);
++
++        $this->assertSame(4, $subscription->invoices()->count());
++    }
++
++    public function test_db_menolak_diskon_lebih_besar_dari_nominal(): void
++    {
++        $subscription = $this->makeSubscription();
++
++        $this->assertDatabaseRejects(
++            fn () => $this->makeInvoice($subscription, ['amount' => 1000, 'discount_amount' => 2000]),
++            'Diskon lebih besar dari nominal seharusnya ditolak CHECK.'
++        );
++    }
++
++    public function test_db_menolak_pembayaran_nol_dan_transaksi_gateway_dobel(): void
++    {
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        $this->assertDatabaseRejects(
++            fn () => Payment::create(['invoice_id' => $invoice->id, 'gateway' => 'manual', 'amount' => 0, 'status' => 'pending']),
++            'Pembayaran bernominal 0 seharusnya ditolak.'
++        );
++
++        Payment::create(['invoice_id' => $invoice->id, 'gateway' => 'midtrans', 'gateway_transaction_id' => 'TRX-9', 'amount' => 1000, 'status' => 'pending']);
++
++        $this->assertDatabaseRejects(
++            fn () => Payment::create(['invoice_id' => $invoice->id, 'gateway' => 'midtrans', 'gateway_transaction_id' => 'TRX-9', 'amount' => 1000, 'status' => 'pending']),
++            'Transaksi gateway dobel seharusnya ditolak unique index.'
++        );
++    }
++
++    public function test_db_mengizinkan_transaksi_gateway_yang_sama_di_gateway_berbeda(): void
++    {
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        Payment::create(['invoice_id' => $invoice->id, 'gateway' => 'midtrans', 'gateway_transaction_id' => 'SAMA-1', 'amount' => 1000, 'status' => 'pending']);
++        Payment::create(['invoice_id' => $invoice->id, 'gateway' => 'xendit', 'gateway_transaction_id' => 'SAMA-1', 'amount' => 1000, 'status' => 'pending']);
++
++        $this->assertSame(2, Payment::count());
++    }
++
++    public function test_db_menolak_stok_negatif_dan_qty_mutasi_nol(): void
++    {
++        $this->assertDatabaseRejects(
++            fn () => Asset::create(['name' => 'Minus', 'category' => 'x', 'stock_qty' => -1]),
++            'Stok negatif seharusnya ditolak CHECK.'
++        );
++
++        $asset = Asset::create(['name' => 'Ok', 'category' => 'x', 'stock_qty' => 5]);
++
++        $this->assertDatabaseRejects(
++            fn () => DB::table('asset_movements')->insert(['asset_id' => $asset->id, 'type' => 'in', 'qty' => 0]),
++            'Mutasi aset dengan qty 0 seharusnya ditolak CHECK.'
++        );
++    }
++
++    public function test_db_menolak_penghapusan_berantai_riwayat_keuangan(): void
++    {
++        $customer = $this->makeCustomer();
++        $subscription = $this->makeSubscription($customer);
++        $invoice = $this->makeInvoice($subscription);
++        Payment::create(['invoice_id' => $invoice->id, 'gateway' => 'manual', 'amount' => 1000, 'status' => 'success']);
++
++        $this->assertDatabaseRejects(fn () => $customer->delete(), 'Hapus pelanggan seharusnya ditolak FK RESTRICT.');
++        $this->assertDatabaseRejects(fn () => $subscription->delete(), 'Hapus langganan seharusnya ditolak FK RESTRICT.');
++        $this->assertDatabaseRejects(fn () => $invoice->delete(), 'Hapus invoice seharusnya ditolak FK RESTRICT.');
++
++        $this->assertDatabaseCount('payments', 1);
++    }
++}
+diff --git a/tests/Feature/PaymentTest.php b/tests/Feature/PaymentTest.php
+new file mode 100644
+index 0000000..be2e858
+--- /dev/null
++++ b/tests/Feature/PaymentTest.php
+@@ -0,0 +1,209 @@
++<?php
++
++namespace Tests\Feature;
++
++use App\Models\IsolirLog;
++use App\Models\Payment;
++use App\Services\MikrotikService;
++use Mockery\MockInterface;
++use Tests\ApiTestCase;
++
++class PaymentTest extends ApiTestCase
++{
++    private function payload(int $invoiceId, array $o = []): array
++    {
++        return $o + [
++            'invoice_id' => $invoiceId,
++            'gateway'    => 'manual',
++            'amount'     => 150000,
++            'status'     => 'success',
++        ];
++    }
++
++    public function test_pembayaran_manual_sukses_melunasi_invoice(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        $this->postJson('/api/payments', $this->payload($invoice->id))->assertCreated();
++
++        $invoice->refresh();
++        $this->assertSame('paid', $invoice->status);
++        $this->assertNotNull($invoice->paid_at);
++        $this->assertDatabaseHas('payments', ['invoice_id' => $invoice->id, 'gateway' => 'manual', 'status' => 'success']);
++    }
++
++    public function test_format_paid_at_tanggal_diterima_tanpa_error(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        $this->postJson('/api/payments', $this->payload($invoice->id, [
++            'paid_at' => now()->subDay()->format('Y-m-d H:i:s'),
++        ]))->assertCreated();
++    }
++
++    public function test_nominal_kurang_ditolak_dan_invoice_tetap_belum_lunas(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        $this->postJson('/api/payments', $this->payload($invoice->id, ['amount' => 1000]))
++            ->assertStatus(422)
++            ->assertJsonValidationErrors('amount');
++
++        $this->assertSame('unpaid', $invoice->fresh()->status);
++        $this->assertDatabaseCount('payments', 0);
++    }
++
++    public function test_diskon_dihitung_pada_nominal_yang_harus_dibayar(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription(), ['amount' => 150000, 'discount_amount' => 50000]);
++
++        $this->postJson('/api/payments', $this->payload($invoice->id, ['amount' => 100000]))->assertCreated();
++
++        $this->assertSame('paid', $invoice->fresh()->status);
++    }
++
++    public function test_invoice_lunas_tidak_bisa_dibayar_lagi(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription(), ['status' => 'paid', 'paid_at' => now()]);
++
++        $this->postJson('/api/payments', $this->payload($invoice->id))
++            ->assertStatus(422)
++            ->assertJsonValidationErrors('invoice_id');
++    }
++
++    public function test_invoice_dibatalkan_tidak_bisa_dibayar(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription(), ['status' => 'cancelled']);
++
++        $this->postJson('/api/payments', $this->payload($invoice->id))->assertStatus(422);
++
++        $this->assertSame('cancelled', $invoice->fresh()->status);
++    }
++
++    public function test_pembayaran_gateway_tidak_bisa_dipalsukan_lewat_api(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        $this->postJson('/api/payments', $this->payload($invoice->id, ['gateway' => 'midtrans']))
++            ->assertStatus(422)
++            ->assertJsonValidationErrors('gateway');
++
++        $this->assertSame('unpaid', $invoice->fresh()->status);
++    }
++
++    public function test_transaction_id_dobel_ditolak(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        $pending = $this->payload($invoice->id, ['status' => 'pending', 'gateway_transaction_id' => 'TRX-1']);
++
++        $this->postJson('/api/payments', $pending)->assertCreated();
++        $this->postJson('/api/payments', $pending)
++            ->assertStatus(422)
++            ->assertJsonValidationErrors('gateway_transaction_id');
++    }
++
++    public function test_dua_pembayaran_sukses_untuk_satu_invoice_tidak_mungkin(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        $this->postJson('/api/payments', $this->payload($invoice->id))->assertCreated();
++        $this->postJson('/api/payments', $this->payload($invoice->id))->assertStatus(422);
++
++        $this->assertSame(1, Payment::where('invoice_id', $invoice->id)->count());
++    }
++
++    public function test_mark_paid_mencatat_pembayaran_manual(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription(), ['amount' => 150000, 'discount_amount' => 25000]);
++
++        $this->postJson("/api/invoices/{$invoice->id}/mark-paid")->assertOk();
++
++        $this->assertSame('paid', $invoice->fresh()->status);
++        $this->assertDatabaseHas('payments', [
++            'invoice_id' => $invoice->id,
++            'gateway'    => 'manual',
++            'status'     => 'success',
++            'amount'     => 125000,
++        ]);
++
++        // Panggilan kedua ditolak, tidak membuat pembayaran ganda.
++        $this->postJson("/api/invoices/{$invoice->id}/mark-paid")->assertStatus(422);
++        $this->assertSame(1, Payment::where('invoice_id', $invoice->id)->count());
++    }
++
++    public function test_mark_paid_ditolak_untuk_invoice_dibatalkan(): void
++    {
++        $this->asRole('staff');
++        $invoice = $this->makeInvoice($this->makeSubscription(), ['status' => 'cancelled']);
++
++        $this->postJson("/api/invoices/{$invoice->id}/mark-paid")->assertStatus(422);
++
++        $this->assertDatabaseCount('payments', 0);
++    }
++
++    public function test_lunas_memulihkan_langganan_yang_terisolir(): void
++    {
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldReceive('restore')
++                ->once()
++                ->withArgs(fn ($router, $username, $profile) => $profile === '10M')
++                ->andReturn(true);
++        });
++
++        $this->asRole('staff');
++        $subscription = $this->makeSubscription(null, [
++            'status'             => 'isolir',
++            'mikrotik_router_id' => $this->makeRouter()->id,
++        ]);
++        $invoice = $this->makeInvoice($subscription, ['status' => 'overdue']);
++
++        $this->postJson("/api/invoices/{$invoice->id}/mark-paid")->assertOk();
++
++        $this->assertSame('active', $subscription->fresh()->status);
++        $this->assertDatabaseHas('isolir_logs', ['subscription_id' => $subscription->id, 'action' => 'restore']);
++    }
++
++    public function test_langganan_tidak_dipulihkan_selama_masih_ada_tagihan_lain(): void
++    {
++        $this->mock(MikrotikService::class, function (MockInterface $mock) {
++            $mock->shouldNotReceive('restore');
++        });
++
++        $this->asRole('staff');
++        $subscription = $this->makeSubscription(null, [
++            'status'             => 'isolir',
++            'mikrotik_router_id' => $this->makeRouter()->id,
++        ]);
++        $this->makeInvoice($subscription, ['status' => 'overdue']);
++        $lunas = $this->makeInvoice($subscription, ['status' => 'overdue']);
++
++        $this->postJson("/api/invoices/{$lunas->id}/mark-paid")->assertOk();
++
++        $this->assertSame('isolir', $subscription->fresh()->status);
++        $this->assertSame(0, IsolirLog::count());
++    }
++
++    public function test_invoice_lunas_tidak_bisa_diubah_atau_dihapus(): void
++    {
++        $this->asRole('super_admin');
++        $invoice = $this->makeInvoice($this->makeSubscription());
++
++        $this->postJson("/api/invoices/{$invoice->id}/mark-paid")->assertOk();
++
++        $this->putJson("/api/invoices/{$invoice->id}", ['amount' => 1])->assertStatus(422);
++        $this->deleteJson("/api/invoices/{$invoice->id}")->assertStatus(422);
++
++        $this->assertSame('150000.00', $invoice->fresh()->amount);
++    }
++}
+diff --git a/tests/Feature/WsTicketTest.php b/tests/Feature/WsTicketTest.php
+new file mode 100644
+index 0000000..d25ad76
+--- /dev/null
++++ b/tests/Feature/WsTicketTest.php
+@@ -0,0 +1,57 @@
++<?php
++
++namespace Tests\Feature;
++
++use Tests\ApiTestCase;
++
++class WsTicketTest extends ApiTestCase
++{
++    public function test_tanpa_login_ditolak(): void
++    {
++        $this->postJson('/api/realtime/ticket')->assertUnauthorized();
++    }
++
++    public function test_staff_tanpa_izin_monitoring_ditolak(): void
++    {
++        $this->asRole('staff');
++
++        $this->postJson('/api/realtime/ticket')->assertForbidden();
++    }
++
++    public function test_teknisi_mendapat_tiket_bertanda_tangan_valid(): void
++    {
++        $teknisi = $this->asRole('teknisi');
++
++        $ticket = $this->postJson('/api/realtime/ticket')
++            ->assertOk()
++            ->json('data.ticket');
++
++        [$payload, $signature] = explode('.', $ticket);
++
++        $secret = config('services.realtime.ticket_secret');
++        $this->assertSame(hash_hmac('sha256', $payload, $secret), $signature);
++
++        $claims = json_decode(base64_decode(strtr($payload, '-_', '+/')), true);
++        $this->assertSame($teknisi->id, $claims['uid']);
++        $this->assertNotEmpty($claims['jti']);
++        $this->assertEqualsWithDelta(time() + 60, $claims['exp'], 5);
++    }
++
++    public function test_tiap_tiket_unik(): void
++    {
++        $this->asRole('teknisi');
++
++        $a = $this->postJson('/api/realtime/ticket')->json('data.ticket');
++        $b = $this->postJson('/api/realtime/ticket')->json('data.ticket');
++
++        $this->assertNotSame($a, $b);
++    }
++
++    public function test_secret_lemah_ditolak_dengan_503(): void
++    {
++        config(['services.realtime.ticket_secret' => 'terlalu-pendek']);
++        $this->asRole('teknisi');
++
++        $this->postJson('/api/realtime/ticket')->assertStatus(503);
++    }
++}

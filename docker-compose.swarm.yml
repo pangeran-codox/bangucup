@@ -56,6 +56,10 @@ x-app-env: &app-env
   MAIL_FROM_NAME:    ${MAIL_FROM_NAME:-Bangucup}
 
   GENIEACS_NBI_URL:                ${GENIEACS_NBI_URL:-http://genieacs:7557}
+  WS_TICKET_SECRET: ${WS_TICKET_SECRET:-}
+  SANCTUM_USER_TOKEN_HOURS: ${SANCTUM_USER_TOKEN_HOURS:-12}
+  BILLING_AUTO_ISOLIR_ENABLED: ${BILLING_AUTO_ISOLIR_ENABLED:-false}
+  BILLING_ISOLIR_MAX_PER_RUN: ${BILLING_ISOLIR_MAX_PER_RUN:-20}
   GENIEACS_ONLINE_THRESHOLD_MINUTES: ${GENIEACS_ONLINE_THRESHOLD_MINUTES:-15}
 
   MIKROTIK_TIMEOUT:        ${MIKROTIK_TIMEOUT:-5}
@@ -273,7 +277,10 @@ services:
       REDIS_ADDR:     redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       REDIS_DB:       ${REDIS_DB:-0}
-      ALLOWED_ORIGIN: "*"
+      # Secret bersama dengan Laravel (minimal 32 karakter). Gateway menolak start bila kosong.
+      WS_TICKET_SECRET: ${WS_TICKET_SECRET:-}
+      # Kosong = hanya same-origin (cukup bila frontend dan /ws satu domain lewat reverse proxy).
+      ALLOWED_ORIGIN: ${WS_ALLOWED_ORIGINS:-}
 
 volumes:
   bangucup_storage:

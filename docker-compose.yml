@@ -98,7 +98,10 @@ services:
       REDIS_ADDR:     redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
       REDIS_DB:       ${REDIS_DB:-0}
-      ALLOWED_ORIGIN: "*"
+      # Secret bersama dengan Laravel (WS_TICKET_SECRET di .env, minimal 32 karakter).
+      WS_TICKET_SECRET: ${WS_TICKET_SECRET:-}
+      # Origin browser yang boleh membuka WebSocket (pisahkan dengan koma).
+      ALLOWED_ORIGIN: ${WS_ALLOWED_ORIGINS:-localhost:*}
     depends_on:
       - mikrotik-collector
     networks:

@@ -113,7 +113,9 @@ class GenieAcsService
                 : $this->extractValue($rawDevice, $paths['brand_model']),
             'rx_power' => $this->extractValue($rawDevice, $paths['rx_power']),
             'ssid' => $this->extractValue($rawDevice, $paths['ssid']),
-            'last_inform_at' => $lastInform ? Carbon::parse($lastInform) : null,
+            // GenieACS mengirim waktu UTC; ubah ke zona aplikasi supaya tersimpan konsisten
+            // (Eloquent menyimpan jam dinding sesuai zona instance Carbon, tanpa konversi).
+            'last_inform_at' => $lastInform ? Carbon::parse($lastInform)->setTimezone(config('app.timezone')) : null,
         ];
     }
 

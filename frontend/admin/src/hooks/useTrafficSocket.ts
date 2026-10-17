@@ -44,7 +44,7 @@ export function useTrafficSocket({
   useEffect(() => {
     const socket = new TrafficSocket(handleSnapshot, setStatus)
     socketRef.current = socket
-    socket.connect()
+    void socket.connect()
 
     return () => {
       socket.disconnect()

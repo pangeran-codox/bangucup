@@ -1,0 +1,934 @@
+diff --git a/app/Console/Commands/CreateCollectorToken.php b/app/Console/Commands/CreateCollectorToken.php
+new file mode 100644
+index 0000000..b73f916
+--- /dev/null
++++ b/app/Console/Commands/CreateCollectorToken.php
+@@ -0,0 +1,39 @@
++<?php
++
++namespace App\Console\Commands;
++
++use App\Models\User;
++use Illuminate\Console\Command;
++use Illuminate\Support\Str;
++
++class CreateCollectorToken extends Command
++{
++    protected $signature = 'collector:token {--email=collector@bangucup.local : Email akun layanan collector}';
++
++    protected $description = 'Buat (atau putar ulang) token khusus untuk mikrotik-collector dengan ability terbatas';
++
++    public function handle(): int
++    {
++        $email = (string) $this->option('email');
++
++        // Akun layanan khusus, tanpa role, jadi tidak bisa memakai endpoint lain.
++        $user = User::firstOrCreate(
++            ['email' => $email],
++            ['name' => 'Collector Service', 'password' => Str::random(64)]
++        );
++
++        $user->syncRoles([]);
++
++        // Cabut token lama supaya hanya ada satu token collector aktif.
++        $user->tokens()->delete();
++
++        $token = $user->createToken('collector', ['routers:collect'])->plainTextToken;
++
++        $this->info('Token collector baru (simpan di COLLECTOR_API_TOKEN, hanya ditampilkan sekali):');
++        $this->line($token);
++        $this->newLine();
++        $this->warn('Restart container collector setelah mengisi token.');
++
++        return self::SUCCESS;
++    }
++}
+diff --git a/app/Http/Controllers/Api/AssetController.php b/app/Http/Controllers/Api/AssetController.php
+index c350cb0..05f1801 100644
+--- a/app/Http/Controllers/Api/AssetController.php
++++ b/app/Http/Controllers/Api/AssetController.php
+@@ -24,7 +24,7 @@ class AssetController extends ApiController
+             $query->where('name', 'ilike', "%{$request->search}%");
+         }
+ 
+-        $assets = $query->orderBy('name')->paginate($request->integer('per_page', 20));
++        $assets = $query->orderBy('name')->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => AssetResource::collection($assets),
+@@ -89,7 +89,7 @@ class AssetController extends ApiController
+     {
+         $movements = $asset->movements()
+             ->orderByDesc('created_at')
+-            ->paginate($request->integer('per_page', 20));
++            ->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => $movements->items(),
+diff --git a/app/Http/Controllers/Api/AuthController.php b/app/Http/Controllers/Api/AuthController.php
+index 6329f2b..8038a31 100644
+--- a/app/Http/Controllers/Api/AuthController.php
++++ b/app/Http/Controllers/Api/AuthController.php
+@@ -19,7 +19,11 @@ class AuthController extends ApiController
+             return $this->error('Email atau password salah.', 401);
+         }
+ 
+-        $token = $user->createToken('api-token')->plainTextToken;
++        $token = $user->createToken(
++            'api-token',
++            ['*'],
++            now()->addHours((int) config('sanctum.user_token_ttl_hours', 12))
++        )->plainTextToken;
+ 
+         return $this->success([
+             'token' => $token,
+diff --git a/app/Http/Controllers/Api/CustomerController.php b/app/Http/Controllers/Api/CustomerController.php
+index 2c57550..694c05b 100644
+--- a/app/Http/Controllers/Api/CustomerController.php
++++ b/app/Http/Controllers/Api/CustomerController.php
+@@ -30,7 +30,7 @@ class CustomerController extends ApiController
+ 
+         $customers = $query
+             ->orderBy('name')
+-            ->paginate($request->integer('per_page', 20));
++            ->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => CustomerResource::collection($customers),
+diff --git a/app/Http/Controllers/Api/DeviceController.php b/app/Http/Controllers/Api/DeviceController.php
+index 47a1e97..37514c0 100644
+--- a/app/Http/Controllers/Api/DeviceController.php
++++ b/app/Http/Controllers/Api/DeviceController.php
+@@ -26,7 +26,7 @@ class DeviceController extends ApiController
+ 
+         $devices = $query
+             ->orderByDesc('last_inform_at')
+-            ->paginate($request->integer('per_page', 20));
++            ->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => DeviceResource::collection($devices),
+diff --git a/app/Http/Controllers/Api/InvoiceController.php b/app/Http/Controllers/Api/InvoiceController.php
+index d769d92..557a283 100644
+--- a/app/Http/Controllers/Api/InvoiceController.php
++++ b/app/Http/Controllers/Api/InvoiceController.php
+@@ -5,9 +5,13 @@ namespace App\Http\Controllers\Api;
+ use App\Http\Requests\Invoice\StoreInvoiceRequest;
+ use App\Http\Resources\InvoiceResource;
+ use App\Models\Invoice;
++use App\Models\Payment;
+ use App\Services\BillingService;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\Request;
++use Illuminate\Support\Facades\DB;
++use Illuminate\Validation\Rule;
++use Illuminate\Validation\ValidationException;
+ 
+ class InvoiceController extends ApiController
+ {
+@@ -35,7 +39,7 @@ class InvoiceController extends ApiController
+ 
+         $invoices = $query
+             ->orderByDesc('created_at')
+-            ->paginate($request->integer('per_page', 20));
++            ->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => InvoiceResource::collection($invoices),
+@@ -65,31 +69,76 @@ class InvoiceController extends ApiController
+ 
+     public function update(Request $request, Invoice $invoice): JsonResponse
+     {
+-        $invoice->update($request->only([
+-            'voucher_id', 'amount', 'discount_amount', 'due_date', 'status',
+-        ]));
++        if ($invoice->status === 'paid') {
++            return $this->error('Invoice yang sudah lunas tidak dapat diubah.', 422);
++        }
++
++        // Status "paid" sengaja tidak boleh diset di sini; pakai endpoint mark-paid
++        // supaya pembayaran tercatat dan langganan dipulihkan.
++        $data = $request->validate([
++            'voucher_id'      => ['nullable', 'exists:vouchers,id'],
++            'amount'          => ['sometimes', 'numeric', 'min:0'],
++            'discount_amount' => ['sometimes', 'nullable', 'numeric', 'min:0'],
++            'due_date'        => ['sometimes', 'date'],
++            'status'          => ['sometimes', Rule::in(['unpaid', 'overdue', 'cancelled'])],
++        ]);
++
++        $amount   = (float) ($data['amount'] ?? $invoice->amount);
++        $discount = (float) ($data['discount_amount'] ?? $invoice->discount_amount ?? 0);
++
++        if ($discount > $amount) {
++            throw ValidationException::withMessages([
++                'discount_amount' => 'Diskon tidak boleh lebih besar dari nominal tagihan.',
++            ]);
++        }
++
++        $invoice->update($data);
+ 
+         return $this->success(new InvoiceResource($invoice), 'Invoice berhasil diperbarui');
+     }
+ 
+     public function destroy(Invoice $invoice): JsonResponse
+     {
++        // Invoice lunas adalah catatan keuangan; batalkan (cancelled) saja, jangan dihapus.
++        if ($invoice->status === 'paid' || $invoice->payments()->exists()) {
++            return $this->error('Invoice yang sudah punya pembayaran tidak dapat dihapus.', 422);
++        }
++
+         $invoice->delete();
+ 
+         return $this->noContent();
+     }
+ 
+-    public function markPaid(Invoice $invoice): JsonResponse
++    public function markPaid(Request $request, Invoice $invoice): JsonResponse
+     {
+-        if ($invoice->status === 'paid') {
+-            return $this->error('Invoice sudah berstatus paid.', 422);
+-        }
+-
+-        $invoice->update([
+-            'status'  => 'paid',
+-            'paid_at' => now(),
+-        ]);
+-
++        $invoice = DB::transaction(function () use ($invoice, $request) {
++            $locked = Invoice::lockForUpdate()->findOrFail($invoice->id);
++
++            if ($locked->status === 'paid') {
++                throw ValidationException::withMessages(['invoice' => 'Invoice sudah berstatus paid.']);
++            }
++
++            if ($locked->status === 'cancelled') {
++                throw ValidationException::withMessages(['invoice' => 'Invoice yang dibatalkan tidak dapat dilunasi.']);
++            }
++
++            // Catat sebagai pembayaran manual agar riwayat keuangan tetap lengkap.
++            $payment = Payment::create([
++                'invoice_id'  => $locked->id,
++                'gateway'     => 'manual',
++                'method'      => 'manual',
++                'amount'      => $locked->final_amount,
++                'status'      => 'success',
++                'paid_at'     => now(),
++                'raw_payload' => ['source' => 'mark-paid', 'recorded_by' => $request->user()->id],
++            ]);
++
++            $locked->update(['status' => 'paid', 'paid_at' => $payment->paid_at]);
++
++            return $locked;
++        });
++
++        // Panggil MikroTik setelah transaksi selesai.
+         $restored = $this->billing->restoreIfSettled($invoice);
+ 
+         return $this->success(
+diff --git a/app/Http/Controllers/Api/IsolirLogController.php b/app/Http/Controllers/Api/IsolirLogController.php
+index bda3a1f..918aec7 100644
+--- a/app/Http/Controllers/Api/IsolirLogController.php
++++ b/app/Http/Controllers/Api/IsolirLogController.php
+@@ -27,7 +27,7 @@ class IsolirLogController extends ApiController
+ 
+         $logs = $query
+             ->orderByDesc('created_at')
+-            ->paginate($request->integer('per_page', 20));
++            ->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => IsolirLogResource::collection($logs),
+diff --git a/app/Http/Controllers/Api/MikrotikRouterController.php b/app/Http/Controllers/Api/MikrotikRouterController.php
+index eafbf58..0f52d7e 100644
+--- a/app/Http/Controllers/Api/MikrotikRouterController.php
++++ b/app/Http/Controllers/Api/MikrotikRouterController.php
+@@ -8,6 +8,7 @@ use App\Models\MikrotikRouter;
+ use App\Services\MikrotikService;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\Request;
++use Laravel\Sanctum\PersonalAccessToken;
+ 
+ class MikrotikRouterController extends ApiController
+ {
+@@ -34,7 +35,14 @@ class MikrotikRouterController extends ApiController
+ 
+     public function update(StoreRouterRequest $request, MikrotikRouter $router): JsonResponse
+     {
+-        $router->update($request->validated());
++        $data = $request->validated();
++
++        // Password kosong saat edit = jangan ubah password yang tersimpan.
++        if (empty($data['password'])) {
++            unset($data['password']);
++        }
++
++        $router->update($data);
+ 
+         return $this->success(new MikrotikRouterResource($router), 'Router berhasil diperbarui');
+     }
+@@ -66,4 +74,39 @@ class MikrotikRouterController extends ApiController
+             'interfaces'=> $traffic,
+         ]);
+     }
++
++    /**
++     * Daftar router lengkap dengan kredensial, KHUSUS untuk collector Go.
++     *
++     * Hanya token yang secara eksplisit punya ability `routers:collect` yang diterima.
++     * Token login biasa (ability `*`) sengaja ditolak, jadi password router
++     * tidak pernah sampai ke browser atau user biasa.
++     */
++    public function collector(Request $request): JsonResponse
++    {
++        $token = $request->user()?->currentAccessToken();
++
++        abort_unless(
++            $token instanceof PersonalAccessToken
++                && in_array('routers:collect', $token->abilities ?? [], true),
++            403,
++            'Token tidak memiliki ability routers:collect.'
++        );
++
++        $routers = MikrotikRouter::where('is_active', true)
++            ->orderBy('id')
++            ->get()
++            ->map(fn (MikrotikRouter $r) => [
++                'id'        => $r->id,
++                'name'      => $r->name,
++                'host'      => $r->host,
++                'api_port'  => $r->api_port,
++                'username'  => $r->username,
++                'password'  => $r->password, // didekripsi oleh cast `encrypted`
++                'is_active' => true,
++            ])
++            ->values();
++
++        return $this->success($routers);
++    }
+ }
+diff --git a/app/Http/Controllers/Api/PaymentController.php b/app/Http/Controllers/Api/PaymentController.php
+index 294b018..dae5252 100644
+--- a/app/Http/Controllers/Api/PaymentController.php
++++ b/app/Http/Controllers/Api/PaymentController.php
+@@ -8,7 +8,9 @@ use App\Models\Payment;
+ use App\Services\BillingService;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\Request;
++use Illuminate\Support\Facades\DB;
+ use Illuminate\Validation\Rule;
++use Illuminate\Validation\ValidationException;
+ 
+ class PaymentController extends ApiController
+ {
+@@ -28,7 +30,7 @@ class PaymentController extends ApiController
+ 
+         $payments = $query
+             ->orderByDesc('created_at')
+-            ->paginate($request->integer('per_page', 20));
++            ->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => PaymentResource::collection($payments),
+@@ -48,27 +50,72 @@ class PaymentController extends ApiController
+         return $this->success(new PaymentResource($payment));
+     }
+ 
++    /**
++     * Catat pembayaran MANUAL (tunai/transfer).
++     *
++     * Pembayaran dari payment gateway (midtrans/xendit) tidak boleh masuk lewat sini;
++     * itu harus lewat webhook yang memverifikasi signature.
++     */
+     public function store(Request $request): JsonResponse
+     {
+         $data = $request->validate([
+-            'invoice_id' => ['required', 'exists:invoices,id'],
+-            'gateway'    => ['required', Rule::in(['midtrans', 'xendit', 'manual', 'other'])],
+-            'method'     => ['nullable', 'string', 'max:50'],
+-            'amount'     => ['required', 'numeric', 'min:0'],
+-            'status'     => ['nullable', Rule::in(['pending', 'success', 'failed', 'expired'])],
+-            'paid_at'    => ['nullable', 'datetime'],
++            'invoice_id'             => ['required', 'integer', 'exists:invoices,id'],
++            'gateway'                => ['required', Rule::in(['manual', 'other'])],
++            'gateway_transaction_id' => ['nullable', 'string', 'max:150', 'unique:payments,gateway_transaction_id'],
++            'method'                 => ['nullable', 'string', 'max:50'],
++            'amount'                 => ['required', 'numeric', 'min:0.01'],
++            'status'                 => ['nullable', Rule::in(['pending', 'success', 'failed', 'expired'])],
++            'paid_at'                => ['nullable', 'date', 'before_or_equal:now'],
+         ]);
+ 
+-        $payment = Payment::create($data);
++        $status = $data['status'] ?? 'pending';
+ 
+-        // Jika sukses, update status invoice
+-        if (($data['status'] ?? 'pending') === 'success') {
+-            $invoice = Invoice::find($data['invoice_id']);
++        [$payment, $invoice] = DB::transaction(function () use ($data, $status, $request) {
++            // Kunci baris invoice supaya dua pembayaran bersamaan tidak lolos bersamaan.
++            $invoice = Invoice::lockForUpdate()->findOrFail($data['invoice_id']);
+ 
+-            if ($invoice) {
+-                $invoice->update(['status' => 'paid', 'paid_at' => $data['paid_at'] ?? now()]);
+-                $this->billing->restoreIfSettled($invoice);
++            if (! in_array($invoice->status, ['unpaid', 'overdue'], true)) {
++                throw ValidationException::withMessages([
++                    'invoice_id' => "Invoice berstatus {$invoice->status}, tidak bisa dibayar.",
++                ]);
+             }
++
++            if ($status === 'success') {
++                if (round((float) $data['amount'], 2) < round($invoice->final_amount, 2)) {
++                    throw ValidationException::withMessages([
++                        'amount' => 'Nominal kurang dari total tagihan.',
++                    ]);
++                }
++
++                if ($invoice->payments()->where('status', 'success')->exists()) {
++                    throw ValidationException::withMessages([
++                        'invoice_id' => 'Invoice ini sudah punya pembayaran sukses.',
++                    ]);
++                }
++            }
++
++            $payment = Payment::create([
++                'invoice_id'             => $invoice->id,
++                'gateway'                => $data['gateway'],
++                'gateway_transaction_id' => $data['gateway_transaction_id'] ?? null,
++                'method'                 => $data['method'] ?? null,
++                'amount'                 => $data['amount'],
++                'status'                 => $status,
++                'paid_at'                => $status === 'success' ? ($data['paid_at'] ?? now()) : null,
++                'raw_payload'            => ['source' => 'manual', 'recorded_by' => $request->user()->id],
++            ]);
++
++            if ($status === 'success') {
++                $invoice->update(['status' => 'paid', 'paid_at' => $payment->paid_at]);
++            }
++
++            return [$payment, $invoice];
++        });
++
++        // Panggil MikroTik SETELAH transaksi selesai, supaya lock database tidak
++        // tertahan menunggu router.
++        if ($status === 'success') {
++            $this->billing->restoreIfSettled($invoice);
+         }
+ 
+         return $this->created(new PaymentResource($payment), 'Pembayaran berhasil dicatat');
+diff --git a/app/Http/Controllers/Api/SubscriptionController.php b/app/Http/Controllers/Api/SubscriptionController.php
+index 787a5a0..0637f04 100644
+--- a/app/Http/Controllers/Api/SubscriptionController.php
++++ b/app/Http/Controllers/Api/SubscriptionController.php
+@@ -9,6 +9,7 @@ use App\Models\Subscription;
+ use App\Services\MikrotikService;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\Request;
++use Illuminate\Validation\Rule;
+ 
+ class SubscriptionController extends ApiController
+ {
+@@ -32,7 +33,7 @@ class SubscriptionController extends ApiController
+ 
+         $subscriptions = $query
+             ->orderByDesc('created_at')
+-            ->paginate($request->integer('per_page', 20));
++            ->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => SubscriptionResource::collection($subscriptions),
+@@ -62,11 +63,21 @@ class SubscriptionController extends ApiController
+ 
+     public function update(Request $request, Subscription $subscription): JsonResponse
+     {
+-        $subscription->update($request->only([
+-            'package_id', 'odp_id', 'mikrotik_router_id',
+-            'port_number', 'pppoe_password', 'billing_due_date',
+-            'status', 'ended_at',
+-        ]));
++        // Status isolir/active TIDAK boleh diubah lewat sini; pakai endpoint
++        // isolir/restore supaya MikroTik dan log audit ikut diperbarui.
++        // Dari sini hanya "terminated" yang diizinkan.
++        $data = $request->validate([
++            'package_id'         => ['sometimes', 'exists:packages,id'],
++            'odp_id'             => ['sometimes', 'nullable', 'exists:odps,id'],
++            'mikrotik_router_id' => ['sometimes', 'nullable', 'exists:mikrotik_routers,id'],
++            'port_number'        => ['sometimes', 'nullable', 'integer', 'min:1'],
++            'pppoe_password'     => ['sometimes', 'string', 'min:1', 'max:255'],
++            'billing_due_date'   => ['sometimes', 'nullable', 'integer', 'min:1', 'max:31'],
++            'status'             => ['sometimes', Rule::in(['terminated'])],
++            'ended_at'           => ['sometimes', 'nullable', 'date'],
++        ]);
++
++        $subscription->update($data);
+ 
+         return $this->success(new SubscriptionResource($subscription), 'Langganan berhasil diperbarui');
+     }
+diff --git a/app/Http/Controllers/Api/TicketController.php b/app/Http/Controllers/Api/TicketController.php
+index 73c1a60..4803114 100644
+--- a/app/Http/Controllers/Api/TicketController.php
++++ b/app/Http/Controllers/Api/TicketController.php
+@@ -31,7 +31,7 @@ class TicketController extends ApiController
+ 
+         $tickets = $query
+             ->orderByDesc('created_at')
+-            ->paginate($request->integer('per_page', 20));
++            ->paginate(min($request->integer('per_page', 20), 100));
+ 
+         return $this->success([
+             'data' => TicketResource::collection($tickets),
+diff --git a/app/Http/Controllers/Api/UserController.php b/app/Http/Controllers/Api/UserController.php
+index d31afd6..ca0a212 100644
+--- a/app/Http/Controllers/Api/UserController.php
++++ b/app/Http/Controllers/Api/UserController.php
+@@ -20,6 +20,11 @@ class UserController extends ApiController
+ 
+     public function store(StoreUserRequest $request): JsonResponse
+     {
++        // Menetapkan role = hak tertinggi. Hanya yang boleh mengubah role.
++        if ($request->filled('roles') && ! $request->user()->can('update_roles')) {
++            return $this->error('Anda tidak berhak menetapkan role.', 403);
++        }
++
+         $user = User::create([
+             'name'     => $request->name,
+             'email'    => $request->email,
+@@ -42,13 +47,19 @@ class UserController extends ApiController
+ 
+     public function update(Request $request, User $user): JsonResponse
+     {
++        if ($denied = $this->denyIfProtected($request, $user)) {
++            return $denied;
++        }
++
+         $data = $request->validate([
+             'name'     => ['sometimes', 'string', 'max:255'],
+             'email'    => ['sometimes', 'email', "unique:users,email,{$user->id}"],
+             'password' => ['nullable', 'string', 'min:8'],
+         ]);
+ 
+-        if (isset($data['password'])) {
++        $passwordChanged = ! empty($data['password']);
++
++        if ($passwordChanged) {
+             $data['password'] = Hash::make($data['password']);
+         } else {
+             unset($data['password']);
+@@ -56,15 +67,30 @@ class UserController extends ApiController
+ 
+         $user->update($data);
+ 
++        // Ganti password = semua sesi lama user itu dicabut (kecuali sesi yang sedang dipakai).
++        if ($passwordChanged) {
++            $currentId = $user->is($request->user()) ? $request->user()->currentAccessToken()?->id : null;
++            $user->tokens()->when($currentId, fn ($q) => $q->where('id', '!=', $currentId))->delete();
++        }
++
+         return $this->success(new UserResource($user), 'User berhasil diperbarui');
+     }
+ 
+-    public function destroy(User $user): JsonResponse
++    public function destroy(Request $request, User $user): JsonResponse
+     {
+-        if ($user->id === auth()->id()) {
++        if ($user->id === $request->user()->id) {
+             return $this->error('Tidak bisa menghapus akun sendiri.', 422);
+         }
+ 
++        if ($denied = $this->denyIfProtected($request, $user)) {
++            return $denied;
++        }
++
++        if ($this->isLastSuperAdmin($user)) {
++            return $this->error('Tidak bisa menghapus super_admin terakhir.', 422);
++        }
++
++        $user->tokens()->delete();
+         $user->delete();
+ 
+         return $this->noContent();
+@@ -77,8 +103,29 @@ class UserController extends ApiController
+             'roles.*' => ['string', 'exists:roles,name'],
+         ]);
+ 
++        // Jangan sampai sistem kehilangan super_admin terakhir.
++        if ($this->isLastSuperAdmin($user) && ! in_array('super_admin', $data['roles'], true)) {
++            return $this->error('Tidak bisa mencabut role super_admin dari super_admin terakhir.', 422);
++        }
++
+         $user->syncRoles($data['roles']);
+ 
+         return $this->success(new UserResource($user->load('roles')), 'Role berhasil diperbarui');
+     }
++
++    /** Hanya super_admin yang boleh mengubah atau menghapus akun super_admin lain. */
++    private function denyIfProtected(Request $request, User $target): ?JsonResponse
++    {
++        if ($target->hasRole('super_admin') && ! $request->user()->hasRole('super_admin')) {
++            return $this->error('Hanya super_admin yang dapat mengubah akun super_admin.', 403);
++        }
++
++        return null;
++    }
++
++    private function isLastSuperAdmin(User $user): bool
++    {
++        return $user->hasRole('super_admin')
++            && User::role('super_admin')->count() <= 1;
++    }
+ }
+diff --git a/app/Http/Requests/Router/StoreRouterRequest.php b/app/Http/Requests/Router/StoreRouterRequest.php
+index d9c3ec8..75b00b6 100644
+--- a/app/Http/Requests/Router/StoreRouterRequest.php
++++ b/app/Http/Requests/Router/StoreRouterRequest.php
+@@ -15,7 +15,8 @@ class StoreRouterRequest extends FormRequest
+             'host'      => ['required', 'string', 'max:100'],
+             'api_port'  => ['nullable', 'integer', 'min:1', 'max:65535'],
+             'username'  => ['required', 'string', 'max:100'],
+-            'password'  => ['required', 'string'],
++            // Wajib saat membuat router; saat edit boleh dikosongkan (password lama dipertahankan).
++            'password'  => [$this->isMethod('POST') ? 'required' : 'nullable', 'string', 'max:255'],
+             'is_active' => ['nullable', 'boolean'],
+             'notes'     => ['nullable', 'string', 'max:255'],
+         ];
+diff --git a/app/Http/Resources/MikrotikRouterResource.php b/app/Http/Resources/MikrotikRouterResource.php
+index e685896..f25accd 100644
+--- a/app/Http/Resources/MikrotikRouterResource.php
++++ b/app/Http/Resources/MikrotikRouterResource.php
+@@ -15,7 +15,6 @@ class MikrotikRouterResource extends JsonResource
+             'host'       => $this->host,
+             'api_port'   => $this->api_port,
+             'username'   => $this->username,
+-            'password'   => $this->password, // decrypted — only used by collector
+             'is_active'  => $this->is_active,
+             'notes'      => $this->notes,
+             'created_at' => $this->created_at,
+diff --git a/app/Models/MikrotikRouter.php b/app/Models/MikrotikRouter.php
+index 76adbfe..5d71657 100644
+--- a/app/Models/MikrotikRouter.php
++++ b/app/Models/MikrotikRouter.php
+@@ -16,6 +16,10 @@ class MikrotikRouter extends Model
+         'notes',
+     ];
+ 
++    protected $hidden = [
++        'password',
++    ];
++
+     protected $casts = [
+         'password' => 'encrypted',
+         'is_active' => 'boolean',
+diff --git a/app/Models/Payment.php b/app/Models/Payment.php
+index 77f84cd..40c3a45 100644
+--- a/app/Models/Payment.php
++++ b/app/Models/Payment.php
+@@ -10,6 +10,9 @@ class Payment extends Model
+ {
+     use HasFactory;
+ 
++    // Tabel payments hanya punya kolom created_at.
++    const UPDATED_AT = null;
++
+     protected $fillable = [
+         'invoice_id',
+         'gateway',
+diff --git a/bootstrap/app.php b/bootstrap/app.php
+index 2e8582e..f09a27b 100644
+--- a/bootstrap/app.php
++++ b/bootstrap/app.php
+@@ -18,6 +18,13 @@ return Application::configure(basePath: dirname(__DIR__))
+ 
+         // Stateless API — tidak perlu CSRF untuk route /api/*
+         $middleware->statefulApi();
++
++        // Alias middleware Spatie Permission (dipakai di routes/api.php)
++        $middleware->alias([
++            'role'               => \Spatie\Permission\Middleware\RoleMiddleware::class,
++            'permission'         => \Spatie\Permission\Middleware\PermissionMiddleware::class,
++            'role_or_permission' => \Spatie\Permission\Middleware\RoleOrPermissionMiddleware::class,
++        ]);
+     })
+     ->withExceptions(function (Exceptions $exceptions): void {
+         // Selalu return JSON untuk request ke /api/*
+diff --git a/config/sanctum.php b/config/sanctum.php
+index cde73cf..8dde94c 100644
+--- a/config/sanctum.php
++++ b/config/sanctum.php
+@@ -52,6 +52,9 @@ return [
+ 
+     'expiration' => null,
+ 
++    // Masa berlaku token login user (jam). Token layanan (collector) tidak dipengaruhi.
++    'user_token_ttl_hours' => (int) env('SANCTUM_USER_TOKEN_HOURS', 12),
++
+     /*
+     |--------------------------------------------------------------------------
+     | Token Prefix
+diff --git a/database/seeders/RolePermissionSeeder.php b/database/seeders/RolePermissionSeeder.php
+index 4b70c23..162b3bc 100644
+--- a/database/seeders/RolePermissionSeeder.php
++++ b/database/seeders/RolePermissionSeeder.php
+@@ -23,6 +23,7 @@ class RolePermissionSeeder extends Seeder
+             'odps',
+             'vouchers',
+             'devices',
++            'routers',
+         ];
+ 
+         $actions = ['view', 'create', 'update', 'delete'];
+@@ -65,6 +66,8 @@ class RolePermissionSeeder extends Seeder
+             array_map(fn ($a) => "{$a}_payments", ['view', 'create', 'update']),
+             array_map(fn ($a) => "{$a}_tickets", ['view', 'create', 'update']),
+             array_map(fn ($a) => "{$a}_vouchers", ['view', 'create', 'update']),
++            // Dropdown paket & ODP di form pelanggan/langganan
++            ['view_packages', 'view_odps'],
+         ))->get();
+         $staff->syncPermissions($staffPermissions);
+ 
+@@ -75,7 +78,7 @@ class RolePermissionSeeder extends Seeder
+             array_map(fn ($a) => "{$a}_tickets", ['view', 'update']),
+             array_map(fn ($a) => "{$a}_devices", ['view', 'update']),
+             array_map(fn ($a) => "{$a}_assets", ['view', 'update']),
+-            ['view_odps', 'view_subscriptions'],
++            ['view_odps', 'view_subscriptions', 'view_customers', 'view_routers'],
+         ))->get();
+         $teknisi->syncPermissions($teknisiPermissions);
+ 
+diff --git a/routes/api.php b/routes/api.php
+index a3cbbaf..dd3c017 100644
+--- a/routes/api.php
++++ b/routes/api.php
+@@ -1,92 +1,131 @@
+ <?php
+ 
+-use Illuminate\Support\Facades\Route;
++use App\Http\Controllers\Api\AssetController;
+ use App\Http\Controllers\Api\AuthController;
+-use App\Http\Controllers\Api\DashboardController;
++use App\Http\Controllers\Api\CableRouteController;
+ use App\Http\Controllers\Api\CustomerController;
+-use App\Http\Controllers\Api\PackageController;
+-use App\Http\Controllers\Api\SubscriptionController;
++use App\Http\Controllers\Api\DashboardController;
++use App\Http\Controllers\Api\DeviceController;
+ use App\Http\Controllers\Api\InvoiceController;
+-use App\Http\Controllers\Api\PaymentController;
++use App\Http\Controllers\Api\IsolirLogController;
+ use App\Http\Controllers\Api\MikrotikRouterController;
+-use App\Http\Controllers\Api\TicketController;
+-use App\Http\Controllers\Api\AssetController;
+ use App\Http\Controllers\Api\OdpController;
+-use App\Http\Controllers\Api\VoucherController;
+-use App\Http\Controllers\Api\DeviceController;
++use App\Http\Controllers\Api\PackageController;
++use App\Http\Controllers\Api\PaymentController;
++use App\Http\Controllers\Api\SubscriptionController;
++use App\Http\Controllers\Api\TicketController;
+ use App\Http\Controllers\Api\UserController;
+-use App\Http\Controllers\Api\CableRouteController;
+-use App\Http\Controllers\Api\IsolirLogController;
++use App\Http\Controllers\Api\VoucherController;
++use Illuminate\Support\Facades\Route;
+ 
+ // ─── Auth (publik) ────────────────────────────────────────────────
++// Dibatasi 5 percobaan per menit per IP untuk menahan brute force.
+ Route::prefix('auth')->group(function () {
+-    Route::post('login', [AuthController::class, 'login']);
++    Route::post('login', [AuthController::class, 'login'])->middleware('throttle:5,1');
+ });
+ 
+ // ─── Protected (Sanctum token) ────────────────────────────────────
+ Route::middleware('auth:sanctum')->group(function () {
+ 
+-    // Auth
++    // Helper: daftarkan CRUD dengan permission per aksi (view/create/update/delete_{module}).
++    $crud = function (string $uri, string $controller, string $module, array $only = ['index', 'show', 'store', 'update', 'destroy'], array $parameters = []) {
++        $map = [
++            'view'   => ['index', 'show'],
++            'create' => ['store'],
++            'update' => ['update'],
++            'delete' => ['destroy'],
++        ];
++
++        foreach ($map as $action => $methods) {
++            $methods = array_values(array_intersect($methods, $only));
++
++            if ($methods === []) {
++                continue;
++            }
++
++            Route::apiResource($uri, $controller)
++                ->only($methods)
++                ->parameters($parameters)
++                ->middleware("permission:{$action}_{$module}");
++        }
++    };
++
++    // Auth & profil (cukup login)
+     Route::prefix('auth')->group(function () {
+         Route::post('logout', [AuthController::class, 'logout']);
+         Route::get('me',      [AuthController::class, 'me']);
+     });
+ 
+-    // Dashboard
++    // Dashboard (cukup login)
+     Route::get('dashboard/stats', [DashboardController::class, 'stats']);
+ 
++    // ── Endpoint internal untuk collector Go ──────────────────────
++    // Tanpa middleware permission: akses dijaga oleh ability token `routers:collect`
++    // (dicek di controller), bukan oleh role user.
++    Route::get('internal/routers', [MikrotikRouterController::class, 'collector']);
++
+     // Customers
+-    Route::apiResource('customers', CustomerController::class);
++    $crud('customers', CustomerController::class, 'customers');
+ 
+     // Packages
+-    Route::apiResource('packages', PackageController::class);
++    $crud('packages', PackageController::class, 'packages');
+ 
+     // Subscriptions
+-    Route::apiResource('subscriptions', SubscriptionController::class);
+-    Route::post('subscriptions/{subscription}/isolir',  [SubscriptionController::class, 'isolir']);
+-    Route::post('subscriptions/{subscription}/restore', [SubscriptionController::class, 'restore']);
++    $crud('subscriptions', SubscriptionController::class, 'subscriptions');
++    Route::post('subscriptions/{subscription}/isolir',  [SubscriptionController::class, 'isolir'])
++        ->middleware('permission:update_subscriptions');
++    Route::post('subscriptions/{subscription}/restore', [SubscriptionController::class, 'restore'])
++        ->middleware('permission:update_subscriptions');
+ 
+     // Invoices
+-    Route::apiResource('invoices', InvoiceController::class);
+-    Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid']);
++    $crud('invoices', InvoiceController::class, 'invoices');
++    Route::post('invoices/{invoice}/mark-paid', [InvoiceController::class, 'markPaid'])
++        ->middleware('permission:update_invoices');
+ 
+     // Payments
+-    Route::apiResource('payments', PaymentController::class)->only(['index', 'show', 'store']);
++    $crud('payments', PaymentController::class, 'payments', ['index', 'show', 'store']);
+ 
+     // Mikrotik Routers
+-    Route::apiResource('routers', MikrotikRouterController::class);
+-    Route::post('routers/{router}/test-connection', [MikrotikRouterController::class, 'testConnection']);
+-    Route::get('routers/{router}/traffic',          [MikrotikRouterController::class, 'traffic']);
++    $crud('routers', MikrotikRouterController::class, 'routers');
++    Route::post('routers/{router}/test-connection', [MikrotikRouterController::class, 'testConnection'])
++        ->middleware('permission:update_routers');
++    Route::get('routers/{router}/traffic', [MikrotikRouterController::class, 'traffic'])
++        ->middleware('permission:view_routers');
+ 
+     // Tickets
+-    Route::apiResource('tickets', TicketController::class);
+-    Route::post('tickets/{ticket}/replies', [TicketController::class, 'reply']);
++    $crud('tickets', TicketController::class, 'tickets');
++    Route::post('tickets/{ticket}/replies', [TicketController::class, 'reply'])
++        ->middleware('permission:update_tickets');
+ 
+     // Assets
+-    Route::apiResource('assets', AssetController::class);
+-    Route::post('assets/{asset}/movements', [AssetController::class, 'addMovement']);
+-    Route::get('assets/{asset}/movements',  [AssetController::class, 'movements']);
+-
+-    // ODPs
+-    Route::apiResource('odps', OdpController::class);
++    $crud('assets', AssetController::class, 'assets');
++    Route::post('assets/{asset}/movements', [AssetController::class, 'addMovement'])
++        ->middleware('permission:update_assets');
++    Route::get('assets/{asset}/movements',  [AssetController::class, 'movements'])
++        ->middleware('permission:view_assets');
+ 
+-    // Cable Routes
+-    Route::apiResource('cable-routes', CableRouteController::class)
+-        ->parameters(['cable-routes' => 'cableRoute']);
++    // ODPs & jalur kabel (jalur kabel memakai permission odps)
++    $crud('odps', OdpController::class, 'odps');
++    $crud('cable-routes', CableRouteController::class, 'odps', ['index', 'show', 'store', 'update', 'destroy'], ['cable-routes' => 'cableRoute']);
+ 
+     // Isolir Logs (read-only)
+-    Route::get('isolir-logs',                  [IsolirLogController::class, 'index']);
+-    Route::get('isolir-logs/{isolirLog}',      [IsolirLogController::class, 'show']);
++    Route::get('isolir-logs',             [IsolirLogController::class, 'index'])
++        ->middleware('permission:view_subscriptions');
++    Route::get('isolir-logs/{isolirLog}', [IsolirLogController::class, 'show'])
++        ->middleware('permission:view_subscriptions');
+ 
+     // Vouchers
+-    Route::apiResource('vouchers', VoucherController::class);
++    $crud('vouchers', VoucherController::class, 'vouchers');
+ 
+     // Devices (CPE GenieACS)
+-    Route::get('devices',          [DeviceController::class, 'index']);
+-    Route::get('devices/{device}', [DeviceController::class, 'show']);
+-    Route::post('devices/{device}/refresh', [DeviceController::class, 'refresh']);
++    Route::get('devices',          [DeviceController::class, 'index'])->middleware('permission:view_devices');
++    Route::get('devices/{device}', [DeviceController::class, 'show'])->middleware('permission:view_devices');
++    Route::post('devices/{device}/refresh', [DeviceController::class, 'refresh'])
++        ->middleware('permission:update_devices');
+ 
+     // Users & Roles
+-    Route::apiResource('users', UserController::class);
+-    Route::post('users/{user}/roles', [UserController::class, 'syncRoles']);
++    $crud('users', UserController::class, 'users');
++    // Mengubah role = hak tertinggi, hanya yang punya permission update_roles (super_admin).
++    Route::post('users/{user}/roles', [UserController::class, 'syncRoles'])
++        ->middleware('permission:update_roles');
+ });
+diff --git a/routes/console.php b/routes/console.php
+index 12533d8..656bc19 100644
+--- a/routes/console.php
++++ b/routes/console.php
+@@ -23,4 +23,7 @@ Schedule::command('billing:mark-overdue')
+ 
+ Schedule::command('billing:auto-isolir')
+     ->dailyAt('01:00')
+-    ->withoutOverlapping();
+\ No newline at end of file
++    ->withoutOverlapping();
++
++// ─── Keamanan ─────────────────────────────────────────────────────
++Schedule::command('sanctum:prune-expired --hours=24')->daily();
+diff --git a/services/mikrotik-collector/internal/collector/collector.go b/services/mikrotik-collector/internal/collector/collector.go
+index 91efbb2..e7a351b 100644
+--- a/services/mikrotik-collector/internal/collector/collector.go
++++ b/services/mikrotik-collector/internal/collector/collector.go
+@@ -124,19 +124,36 @@ type laravelResponse struct {
+ 	Data []laravelRouter `json:"data"`
+ }
+ 
++// httpClient memakai timeout supaya satu permintaan yang menggantung
++// tidak menghentikan seluruh siklus polling.
++var httpClient = &http.Client{Timeout: 10 * time.Second}
++
+ func (c *Collector) fetchRouters() ([]mikrotik.Router, error) {
+-	url := c.cfg.LaravelAPIURL + "/routers"
+-	req, _ := http.NewRequest(http.MethodGet, url, nil)
++	// Endpoint internal: butuh token dengan ability routers:collect
++	// (buat dengan `php artisan collector:token`).
++	url := c.cfg.LaravelAPIURL + "/internal/routers"
++
++	req, err := http.NewRequest(http.MethodGet, url, nil)
++	if err != nil {
++		return nil, fmt.Errorf("build request: %w", err)
++	}
+ 	req.Header.Set("Authorization", "Bearer "+c.cfg.LaravelAPIToken)
+ 	req.Header.Set("Accept", "application/json")
+ 
+-	resp, err := http.DefaultClient.Do(req)
++	resp, err := httpClient.Do(req)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("http get routers: %w", err)
+ 	}
+ 	defer resp.Body.Close()
+ 
+-	body, _ := io.ReadAll(resp.Body)
++	if resp.StatusCode != http.StatusOK {
++		return nil, fmt.Errorf("laravel API returned status %d (cek COLLECTOR_API_TOKEN)", resp.StatusCode)
++	}
++
++	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
++	if err != nil {
++		return nil, fmt.Errorf("read body: %w", err)
++	}
+ 
+ 	var result laravelResponse
+ 	if err := json.Unmarshal(body, &result); err != nil {

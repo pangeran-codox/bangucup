@@ -52,6 +52,9 @@ return [
 
     'expiration' => null,
 
+    // Masa berlaku token login user (jam). Token layanan (collector) tidak dipengaruhi.
+    'user_token_ttl_hours' => (int) env('SANCTUM_USER_TOKEN_HOURS', 12),
+
     /*
     |--------------------------------------------------------------------------
     | Token Prefix

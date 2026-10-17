@@ -15,7 +15,8 @@ class StoreRouterRequest extends FormRequest
             'host'      => ['required', 'string', 'max:100'],
             'api_port'  => ['nullable', 'integer', 'min:1', 'max:65535'],
             'username'  => ['required', 'string', 'max:100'],
-            'password'  => ['required', 'string'],
+            // Wajib saat membuat router; saat edit boleh dikosongkan (password lama dipertahankan).
+            'password'  => [$this->isMethod('POST') ? 'required' : 'nullable', 'string', 'max:255'],
             'is_active' => ['nullable', 'boolean'],
             'notes'     => ['nullable', 'string', 'max:255'],
         ];

@@ -5,10 +5,13 @@ namespace App\Http\Controllers\Api;
 use App\Http\Requests\Subscription\StoreSubscriptionRequest;
 use App\Http\Resources\SubscriptionResource;
 use App\Models\IsolirLog;
+use App\Models\Odp;
 use App\Models\Subscription;
 use App\Services\MikrotikService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class SubscriptionController extends ApiController
 {
@@ -32,7 +35,7 @@ class SubscriptionController extends ApiController
 
         $subscriptions = $query
             ->orderByDesc('created_at')
-            ->paginate($request->integer('per_page', 20));
+            ->paginate(min($request->integer('per_page', 20), 100));
 
         return $this->success([
             'data' => SubscriptionResource::collection($subscriptions),
@@ -47,7 +50,13 @@ class SubscriptionController extends ApiController
 
     public function store(StoreSubscriptionRequest $request): JsonResponse
     {
-        $subscription = Subscription::create($request->validated());
+        $data = $request->validated();
+
+        // Kolom ini NOT NULL di database, tetapi boleh kosong di form: beri nilai bawaan.
+        $data['started_at']       = $data['started_at'] ?? today()->toDateString();
+        $data['billing_due_date'] = $data['billing_due_date'] ?? 1;
+
+        $subscription = Subscription::create($data);
         $subscription->load(['customer', 'package']);
 
         return $this->created(new SubscriptionResource($subscription), 'Langganan berhasil ditambahkan');
@@ -62,17 +71,51 @@ class SubscriptionController extends ApiController
 
     public function update(Request $request, Subscription $subscription): JsonResponse
     {
-        $subscription->update($request->only([
-            'package_id', 'odp_id', 'mikrotik_router_id',
-            'port_number', 'pppoe_password', 'billing_due_date',
-            'status', 'ended_at',
-        ]));
+        // Status isolir/active TIDAK boleh diubah lewat sini; pakai endpoint
+        // isolir/restore supaya MikroTik dan log audit ikut diperbarui.
+        // Dari sini hanya "terminated" yang diizinkan.
+        $data = $request->validate([
+            'package_id'         => ['sometimes', 'exists:packages,id'],
+            'odp_id'             => ['sometimes', 'nullable', 'exists:odps,id'],
+            'mikrotik_router_id' => ['sometimes', 'nullable', 'exists:mikrotik_routers,id'],
+            'port_number'        => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'pppoe_password'     => ['sometimes', 'string', 'min:1', 'max:255'],
+            'billing_due_date'   => ['sometimes', 'integer', 'min:1', 'max:31'],
+            'status'             => ['sometimes', Rule::in(['terminated'])],
+            'ended_at'           => ['sometimes', 'nullable', 'date'],
+        ]);
+
+        $odpId = array_key_exists('odp_id', $data) ? $data['odp_id'] : $subscription->odp_id;
+        $port  = array_key_exists('port_number', $data) ? $data['port_number'] : $subscription->port_number;
+
+        if ($odpId && $port && ($data['status'] ?? $subscription->status) !== 'terminated') {
+            $odp = Odp::find($odpId);
+
+            if ($odp && $port > $odp->total_ports) {
+                throw ValidationException::withMessages([
+                    'port_number' => "Port melebihi kapasitas ODP ({$odp->total_ports} port).",
+                ]);
+            }
+
+            if (Subscription::portTaken((int) $odpId, (int) $port, $subscription->id)) {
+                throw ValidationException::withMessages([
+                    'port_number' => 'Port ODP ini sudah dipakai langganan lain.',
+                ]);
+            }
+        }
+
+        $subscription->update($data);
 
         return $this->success(new SubscriptionResource($subscription), 'Langganan berhasil diperbarui');
     }
 
     public function destroy(Subscription $subscription): JsonResponse
     {
+        // Riwayat tagihan dan log isolir harus tetap ada. Hentikan layanan dengan status "terminated".
+        if ($subscription->invoices()->exists() || $subscription->isolirLogs()->exists()) {
+            return $this->error('Langganan punya riwayat tagihan/isolir dan tidak dapat dihapus. Ubah status menjadi terminated.', 422);
+        }
+
         $subscription->delete();
 
         return $this->noContent();

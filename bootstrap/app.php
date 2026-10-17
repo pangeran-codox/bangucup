@@ -18,6 +18,13 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Stateless API — tidak perlu CSRF untuk route /api/*
         $middleware->statefulApi();
+
+        // Alias middleware Spatie Permission (dipakai di routes/api.php)
+        $middleware->alias([
+            'role'               => \Spatie\Permission\Middleware\RoleMiddleware::class,
+            'permission'         => \Spatie\Permission\Middleware\PermissionMiddleware::class,
+            'role_or_permission' => \Spatie\Permission\Middleware\RoleOrPermissionMiddleware::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Selalu return JSON untuk request ke /api/*

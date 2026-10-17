@@ -10,6 +10,9 @@ class Payment extends Model
 {
     use HasFactory;
 
+    // Tabel payments hanya punya kolom created_at.
+    const UPDATED_AT = null;
+
     protected $fillable = [
         'invoice_id',
         'gateway',

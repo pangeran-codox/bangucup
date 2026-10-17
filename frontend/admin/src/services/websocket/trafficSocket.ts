@@ -1,3 +1,4 @@
+import { apiClient } from '@/services/api/client'
 import type { RouterSnapshot, WsSubscribeMsg } from '@/types/realtime'
 
 type SnapshotHandler = (snapshot: RouterSnapshot) => void
@@ -10,6 +11,7 @@ export class TrafficSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private destroyed = false
   private reconnectDelay = 2000
+  private connecting = false
 
   private onSnapshot: SnapshotHandler
   private onStatus: StatusHandler
@@ -19,11 +21,32 @@ export class TrafficSocket {
     this.onStatus   = onStatus
   }
 
-  connect() {
+  async connect() {
+    if (this.destroyed || this.connecting) return
     if (this.ws?.readyState === WebSocket.OPEN) return
 
+    this.connecting = true
     this.onStatus('connecting')
-    this.ws = new WebSocket(WS_URL)
+
+    // Gateway hanya menerima koneksi dengan tiket sekali-pakai dari Laravel (berlaku 60 detik),
+    // jadi setiap (re)connect harus meminta tiket baru.
+    let ticket: string
+    try {
+      const res = await apiClient.post<{ data: { ticket: string } }>('/realtime/ticket')
+      ticket = res.data.data.ticket
+    } catch {
+      this.connecting = false
+      if (!this.destroyed) {
+        this.onStatus('disconnected')
+        this.scheduleReconnect()
+      }
+      return
+    }
+    this.connecting = false
+    if (this.destroyed) return
+
+    const sep = WS_URL.includes('?') ? '&' : '?'
+    this.ws = new WebSocket(`${WS_URL}${sep}ticket=${encodeURIComponent(ticket)}`)
 
     this.ws.onopen = () => {
       this.reconnectDelay = 2000
@@ -77,7 +100,7 @@ export class TrafficSocket {
   private scheduleReconnect() {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30_000)
-      this.connect()
+      void this.connect()
     }, this.reconnectDelay)
   }
 }

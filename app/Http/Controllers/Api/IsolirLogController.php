@@ -27,7 +27,7 @@ class IsolirLogController extends ApiController
 
         $logs = $query
             ->orderByDesc('created_at')
-            ->paginate($request->integer('per_page', 20));
+            ->paginate(min($request->integer('per_page', 20), 100));
 
         return $this->success([
             'data' => IsolirLogResource::collection($logs),

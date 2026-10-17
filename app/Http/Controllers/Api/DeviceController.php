@@ -26,7 +26,7 @@ class DeviceController extends ApiController
 
         $devices = $query
             ->orderByDesc('last_inform_at')
-            ->paginate($request->integer('per_page', 20));
+            ->paginate(min($request->integer('per_page', 20), 100));
 
         return $this->success([
             'data' => DeviceResource::collection($devices),

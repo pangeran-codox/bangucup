@@ -19,7 +19,11 @@ class AuthController extends ApiController
             return $this->error('Email atau password salah.', 401);
         }
 
-        $token = $user->createToken('api-token')->plainTextToken;
+        $token = $user->createToken(
+            'api-token',
+            ['*'],
+            now()->addHours((int) config('sanctum.user_token_ttl_hours', 12))
+        )->plainTextToken;
 
         return $this->success([
             'token' => $token,

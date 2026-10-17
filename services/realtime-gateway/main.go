@@ -20,6 +20,15 @@ func main() {
 
 	cfg := config.Load()
 
+	if len(cfg.TicketSecret) < 32 {
+		log.Fatal("[main] WS_TICKET_SECRET wajib diisi (minimal 32 karakter); gateway tidak mau jalan tanpa autentikasi")
+	}
+	for _, o := range cfg.AllowedOrigins {
+		if o == "*" {
+			log.Println("[main] PERINGATAN: ALLOWED_ORIGIN=* mengizinkan semua situs; batasi ke domain Anda")
+		}
+	}
+
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPassword,

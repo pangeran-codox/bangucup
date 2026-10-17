@@ -1,0 +1,888 @@
+diff --git a/app/Http/Controllers/Api/AssetController.php b/app/Http/Controllers/Api/AssetController.php
+index 05f1801..baa2230 100644
+--- a/app/Http/Controllers/Api/AssetController.php
++++ b/app/Http/Controllers/Api/AssetController.php
+@@ -8,7 +8,9 @@ use App\Models\Asset;
+ use App\Models\AssetMovement;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\Request;
++use Illuminate\Support\Facades\DB;
+ use Illuminate\Validation\Rule;
++use Illuminate\Validation\ValidationException;
+ 
+ class AssetController extends ApiController
+ {
+@@ -72,11 +74,19 @@ class AssetController extends ApiController
+             'note'            => ['nullable', 'string', 'max:255'],
+         ]);
+ 
+-        if ($data['type'] === 'out' && $asset->stock_qty < $data['qty']) {
+-            return $this->error("Stok tidak cukup. Stok saat ini: {$asset->stock_qty} {$asset->unit}.", 422);
+-        }
++        // Kunci baris aset supaya dua mutasi bersamaan tidak membuat stok negatif.
++        $movement = DB::transaction(function () use ($data, $asset) {
++            $locked = Asset::lockForUpdate()->findOrFail($asset->id);
++
++            if ($data['type'] === 'out' && $locked->stock_qty < $data['qty']) {
++                throw ValidationException::withMessages([
++                    'qty' => "Stok tidak cukup. Stok saat ini: {$locked->stock_qty} {$locked->unit}.",
++                ]);
++            }
++
++            return AssetMovement::create(array_merge($data, ['asset_id' => $locked->id]));
++        });
+ 
+-        $movement = AssetMovement::create(array_merge($data, ['asset_id' => $asset->id]));
+         $asset->refresh();
+ 
+         return $this->created([
+diff --git a/app/Http/Controllers/Api/CustomerController.php b/app/Http/Controllers/Api/CustomerController.php
+index 694c05b..8d643bc 100644
+--- a/app/Http/Controllers/Api/CustomerController.php
++++ b/app/Http/Controllers/Api/CustomerController.php
+@@ -66,6 +66,11 @@ class CustomerController extends ApiController
+ 
+     public function destroy(Customer $customer): JsonResponse
+     {
++        // Pelanggan dengan langganan/tagihan jangan dihapus (riwayat keuangan harus utuh).
++        if ($customer->subscriptions()->exists()) {
++            return $this->error('Pelanggan masih punya langganan/riwayat tagihan dan tidak dapat dihapus. Ubah status menjadi inactive.', 422);
++        }
++
+         $customer->delete();
+ 
+         return $this->noContent();
+diff --git a/app/Http/Controllers/Api/RealtimeController.php b/app/Http/Controllers/Api/RealtimeController.php
+new file mode 100644
+index 0000000..59d859d
+--- /dev/null
++++ b/app/Http/Controllers/Api/RealtimeController.php
+@@ -0,0 +1,27 @@
++<?php
++
++namespace App\Http\Controllers\Api;
++
++use App\Support\WsTicket;
++use Illuminate\Http\JsonResponse;
++use Illuminate\Http\Request;
++
++class RealtimeController extends ApiController
++{
++    /** Terbitkan tiket WebSocket (berlaku 60 detik, hanya bisa dipakai sekali). */
++    public function ticket(Request $request): JsonResponse
++    {
++        $secret = (string) config('services.realtime.ticket_secret');
++
++        if (strlen($secret) < 32) {
++            return $this->error('WS_TICKET_SECRET belum diatur (minimal 32 karakter).', 503);
++        }
++
++        $ttl = (int) config('services.realtime.ticket_ttl', 60);
++
++        return $this->success([
++            'ticket'     => WsTicket::make($request->user()->id, $secret, $ttl),
++            'expires_in' => $ttl,
++        ]);
++    }
++}
+diff --git a/app/Http/Controllers/Api/SubscriptionController.php b/app/Http/Controllers/Api/SubscriptionController.php
+index 0637f04..aaa434e 100644
+--- a/app/Http/Controllers/Api/SubscriptionController.php
++++ b/app/Http/Controllers/Api/SubscriptionController.php
+@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Api;
+ use App\Http\Requests\Subscription\StoreSubscriptionRequest;
+ use App\Http\Resources\SubscriptionResource;
+ use App\Models\IsolirLog;
++use App\Models\Odp;
+ use App\Models\Subscription;
+ use App\Services\MikrotikService;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\Request;
+ use Illuminate\Validation\Rule;
++use Illuminate\Validation\ValidationException;
+ 
+ class SubscriptionController extends ApiController
+ {
+@@ -77,6 +79,25 @@ class SubscriptionController extends ApiController
+             'ended_at'           => ['sometimes', 'nullable', 'date'],
+         ]);
+ 
++        $odpId = array_key_exists('odp_id', $data) ? $data['odp_id'] : $subscription->odp_id;
++        $port  = array_key_exists('port_number', $data) ? $data['port_number'] : $subscription->port_number;
++
++        if ($odpId && $port && ($data['status'] ?? $subscription->status) !== 'terminated') {
++            $odp = Odp::find($odpId);
++
++            if ($odp && $port > $odp->total_ports) {
++                throw ValidationException::withMessages([
++                    'port_number' => "Port melebihi kapasitas ODP ({$odp->total_ports} port).",
++                ]);
++            }
++
++            if (Subscription::portTaken((int) $odpId, (int) $port, $subscription->id)) {
++                throw ValidationException::withMessages([
++                    'port_number' => 'Port ODP ini sudah dipakai langganan lain.',
++                ]);
++            }
++        }
++
+         $subscription->update($data);
+ 
+         return $this->success(new SubscriptionResource($subscription), 'Langganan berhasil diperbarui');
+@@ -84,6 +105,11 @@ class SubscriptionController extends ApiController
+ 
+     public function destroy(Subscription $subscription): JsonResponse
+     {
++        // Riwayat tagihan dan log isolir harus tetap ada. Hentikan layanan dengan status "terminated".
++        if ($subscription->invoices()->exists() || $subscription->isolirLogs()->exists()) {
++            return $this->error('Langganan punya riwayat tagihan/isolir dan tidak dapat dihapus. Ubah status menjadi terminated.', 422);
++        }
++
+         $subscription->delete();
+ 
+         return $this->noContent();
+diff --git a/app/Http/Requests/Invoice/StoreInvoiceRequest.php b/app/Http/Requests/Invoice/StoreInvoiceRequest.php
+index 25847e0..4d9a6af 100644
+--- a/app/Http/Requests/Invoice/StoreInvoiceRequest.php
++++ b/app/Http/Requests/Invoice/StoreInvoiceRequest.php
+@@ -2,8 +2,10 @@
+ 
+ namespace App\Http\Requests\Invoice;
+ 
++use App\Models\Invoice;
+ use Illuminate\Foundation\Http\FormRequest;
+ use Illuminate\Validation\Rule;
++use Illuminate\Validation\Validator;
+ 
+ class StoreInvoiceRequest extends FormRequest
+ {
+@@ -16,10 +18,44 @@ class StoreInvoiceRequest extends FormRequest
+             'subscription_id' => ['required', 'exists:subscriptions,id'],
+             'voucher_id'      => ['nullable', 'exists:vouchers,id'],
+             'type'            => ['required', Rule::in(['installation', 'monthly', 'other'])],
+-            'period_month'    => ['nullable', 'date_format:Y-m'],
++            'period_month'    => ['nullable', 'date_format:Y-m-d'],
+             'amount'          => ['required', 'numeric', 'min:0'],
+             'discount_amount' => ['nullable', 'numeric', 'min:0'],
+             'due_date'        => ['required', 'date'],
+         ];
+     }
++
++    /** Kolom period_month bertipe date: "2026-10" dinormalkan jadi "2026-10-01". */
++    protected function prepareForValidation(): void
++    {
++        $period = $this->input('period_month');
++
++        if (is_string($period) && preg_match('/^\d{4}-\d{2}$/', $period)) {
++            $this->merge(['period_month' => $period.'-01']);
++        }
++    }
++
++    public function withValidator(Validator $validator): void
++    {
++        $validator->after(function (Validator $v) {
++            if ($v->errors()->isNotEmpty()) {
++                return;
++            }
++
++            if ((float) $this->input('discount_amount', 0) > (float) $this->input('amount')) {
++                $v->errors()->add('discount_amount', 'Diskon tidak boleh lebih besar dari nominal tagihan.');
++            }
++
++            if ($this->input('type') === 'monthly' && $this->filled('period_month')) {
++                $exists = Invoice::where('subscription_id', $this->input('subscription_id'))
++                    ->where('type', 'monthly')
++                    ->whereDate('period_month', $this->input('period_month'))
++                    ->exists();
++
++                if ($exists) {
++                    $v->errors()->add('period_month', 'Invoice bulanan untuk periode ini sudah ada.');
++                }
++            }
++        });
++    }
+ }
+diff --git a/app/Http/Requests/Subscription/StoreSubscriptionRequest.php b/app/Http/Requests/Subscription/StoreSubscriptionRequest.php
+index 50d98eb..d71f3e9 100644
+--- a/app/Http/Requests/Subscription/StoreSubscriptionRequest.php
++++ b/app/Http/Requests/Subscription/StoreSubscriptionRequest.php
+@@ -2,7 +2,10 @@
+ 
+ namespace App\Http\Requests\Subscription;
+ 
++use App\Models\Odp;
++use App\Models\Subscription;
+ use Illuminate\Foundation\Http\FormRequest;
++use Illuminate\Validation\Validator;
+ 
+ class StoreSubscriptionRequest extends FormRequest
+ {
+@@ -22,4 +25,24 @@ class StoreSubscriptionRequest extends FormRequest
+             'started_at'         => ['nullable', 'date'],
+         ];
+     }
++
++    public function withValidator(Validator $validator): void
++    {
++        $validator->after(function (Validator $v) {
++            $odpId = $this->integer('odp_id');
++            $port  = $this->integer('port_number');
++
++            if (! $odpId || ! $port || $v->errors()->has('port_number')) {
++                return;
++            }
++
++            $odp = Odp::find($odpId);
++
++            if ($odp && $port > $odp->total_ports) {
++                $v->errors()->add('port_number', "Port melebihi kapasitas ODP ({$odp->total_ports} port).");
++            } elseif (Subscription::portTaken($odpId, $port)) {
++                $v->errors()->add('port_number', 'Port ODP ini sudah dipakai langganan lain.');
++            }
++        });
++    }
+ }
+diff --git a/app/Models/Subscription.php b/app/Models/Subscription.php
+index 4d30059..35b68c9 100644
+--- a/app/Models/Subscription.php
++++ b/app/Models/Subscription.php
+@@ -77,4 +77,15 @@ class Subscription extends Model
+     {
+         return $this->belongsTo(MikrotikRouter::class);
+     }
++
++    /** Apakah port ODP ini sudah dipakai langganan lain yang belum terminated? */
++    public static function portTaken(int $odpId, int $port, ?int $ignoreId = null): bool
++    {
++        return static::query()
++            ->where('odp_id', $odpId)
++            ->where('port_number', $port)
++            ->where('status', '!=', 'terminated')
++            ->when($ignoreId, fn ($q) => $q->where('id', '!=', $ignoreId))
++            ->exists();
++    }
+ }
+\ No newline at end of file
+diff --git a/app/Support/WsTicket.php b/app/Support/WsTicket.php
+new file mode 100644
+index 0000000..6a92b93
+--- /dev/null
++++ b/app/Support/WsTicket.php
+@@ -0,0 +1,26 @@
++<?php
++
++namespace App\Support;
++
++use Illuminate\Support\Str;
++
++/**
++ * Tiket berumur pendek untuk membuka koneksi WebSocket ke realtime-gateway.
++ *
++ * Format:  base64url(JSON{uid,exp,jti}) . hex(HMAC-SHA256(secret, base64url(...)))
++ * Gateway Go memverifikasi tanda tangan memakai secret yang sama (WS_TICKET_SECRET),
++ * dan menolak jti yang sudah pernah dipakai, jadi tiket hanya berlaku sekali.
++ */
++class WsTicket
++{
++    public static function make(int $userId, string $secret, int $ttlSeconds = 60): string
++    {
++        $payload = rtrim(strtr(base64_encode(json_encode([
++            'uid' => $userId,
++            'exp' => time() + $ttlSeconds,
++            'jti' => Str::random(24),
++        ], JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
++
++        return $payload.'.'.hash_hmac('sha256', $payload, $secret);
++    }
++}
+diff --git a/config/services.php b/config/services.php
+index 6a90eb8..2ae5d80 100644
+--- a/config/services.php
++++ b/config/services.php
+@@ -28,6 +28,12 @@ return [
+         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
+     ],
+ 
++    'realtime' => [
++        // Secret bersama dengan realtime-gateway (env WS_TICKET_SECRET, minimal 32 karakter).
++        'ticket_secret' => env('WS_TICKET_SECRET'),
++        'ticket_ttl'    => (int) env('WS_TICKET_TTL', 60),
++    ],
++
+     'slack' => [
+         'notifications' => [
+             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),
+diff --git a/database/migrations/2026_10_12_000001_harden_billing_integrity.php b/database/migrations/2026_10_12_000001_harden_billing_integrity.php
+new file mode 100644
+index 0000000..9d107c5
+--- /dev/null
++++ b/database/migrations/2026_10_12_000001_harden_billing_integrity.php
+@@ -0,0 +1,155 @@
++<?php
++
++use Illuminate\Database\Migrations\Migration;
++use Illuminate\Database\Schema\Blueprint;
++use Illuminate\Support\Facades\DB;
++use Illuminate\Support\Facades\Schema;
++
++/**
++ * Pengamanan integritas data billing (khusus PostgreSQL).
++ *
++ *  1. Riwayat keuangan tidak lagi ikut terhapus saat pelanggan/langganan/invoice dihapus (CASCADE -> RESTRICT).
++ *  2. Unique index: invoice bulanan per langganan+periode, transaksi gateway, port ODP.
++ *  3. CHECK constraint: nominal tidak negatif, diskon <= nominal, stok >= 0, rentang voucher.
++ *  4. Index pada foreign key yang sering dipakai join/filter.
++ *
++ * Migration berjalan dalam satu transaksi: kalau ada data lama yang melanggar,
++ * pesan error menjelaskan baris mana dan SEMUA perubahan dibatalkan.
++ */
++return new class extends Migration
++{
++    /** [tabel, kolom, tabel_referensi] untuk rantai data keuangan. */
++    private array $financialForeignKeys = [
++        ['subscriptions', 'customer_id',     'customers'],
++        ['invoices',      'customer_id',     'customers'],
++        ['invoices',      'subscription_id', 'subscriptions'],
++        ['payments',      'invoice_id',      'invoices'],
++        ['isolir_logs',   'subscription_id', 'subscriptions'],
++    ];
++
++    public function up(): void
++    {
++        $this->assertNoConflicts();
++
++        // 1. CASCADE -> RESTRICT
++        foreach ($this->financialForeignKeys as [$table, $column, $ref]) {
++            $this->replaceForeignKey($table, $column, $ref, restrict: true);
++        }
++
++        // 2. Unique index parsial
++        DB::statement("CREATE UNIQUE INDEX invoices_monthly_period_unique
++            ON invoices (subscription_id, period_month)
++            WHERE type = 'monthly' AND period_month IS NOT NULL");
++
++        DB::statement('CREATE UNIQUE INDEX payments_gateway_txn_unique
++            ON payments (gateway, gateway_transaction_id)
++            WHERE gateway_transaction_id IS NOT NULL');
++
++        DB::statement("CREATE UNIQUE INDEX subscriptions_odp_port_unique
++            ON subscriptions (odp_id, port_number)
++            WHERE odp_id IS NOT NULL AND port_number IS NOT NULL AND status <> 'terminated'");
++
++        // 3. CHECK constraint
++        DB::statement('ALTER TABLE invoices ADD CONSTRAINT invoices_amounts_check
++            CHECK (amount >= 0 AND discount_amount >= 0 AND discount_amount <= amount)');
++        DB::statement('ALTER TABLE payments ADD CONSTRAINT payments_amount_positive
++            CHECK (amount > 0)');
++        DB::statement('ALTER TABLE assets ADD CONSTRAINT assets_stock_non_negative
++            CHECK (stock_qty >= 0)');
++        DB::statement('ALTER TABLE asset_movements ADD CONSTRAINT asset_movements_qty_positive
++            CHECK (qty > 0)');
++        DB::statement('ALTER TABLE vouchers ADD CONSTRAINT vouchers_valid_range
++            CHECK (valid_from IS NULL OR valid_until IS NULL OR valid_until >= valid_from)');
++        DB::statement('ALTER TABLE vouchers ADD CONSTRAINT vouchers_usage_within_max
++            CHECK (max_usage IS NULL OR used_count <= max_usage)');
++
++        // 4. Index foreign key
++        Schema::table('invoices', function (Blueprint $table) {
++            $table->index('subscription_id');
++            $table->index('customer_id');
++        });
++        Schema::table('payments', function (Blueprint $table) {
++            $table->index('invoice_id');
++        });
++        Schema::table('tickets', function (Blueprint $table) {
++            $table->index('assigned_to');
++        });
++    }
++
++    public function down(): void
++    {
++        Schema::table('tickets', fn (Blueprint $t) => $t->dropIndex(['assigned_to']));
++        Schema::table('payments', fn (Blueprint $t) => $t->dropIndex(['invoice_id']));
++        Schema::table('invoices', function (Blueprint $t) {
++            $t->dropIndex(['subscription_id']);
++            $t->dropIndex(['customer_id']);
++        });
++
++        DB::statement('ALTER TABLE vouchers DROP CONSTRAINT vouchers_usage_within_max');
++        DB::statement('ALTER TABLE vouchers DROP CONSTRAINT vouchers_valid_range');
++        DB::statement('ALTER TABLE asset_movements DROP CONSTRAINT asset_movements_qty_positive');
++        DB::statement('ALTER TABLE assets DROP CONSTRAINT assets_stock_non_negative');
++        DB::statement('ALTER TABLE payments DROP CONSTRAINT payments_amount_positive');
++        DB::statement('ALTER TABLE invoices DROP CONSTRAINT invoices_amounts_check');
++
++        DB::statement('DROP INDEX subscriptions_odp_port_unique');
++        DB::statement('DROP INDEX payments_gateway_txn_unique');
++        DB::statement('DROP INDEX invoices_monthly_period_unique');
++
++        foreach ($this->financialForeignKeys as [$table, $column, $ref]) {
++            $this->replaceForeignKey($table, $column, $ref, restrict: false);
++        }
++    }
++
++    private function replaceForeignKey(string $table, string $column, string $ref, bool $restrict): void
++    {
++        Schema::table($table, fn (Blueprint $t) => $t->dropForeign([$column]));
++
++        Schema::table($table, function (Blueprint $t) use ($column, $ref, $restrict) {
++            $fk = $t->foreign($column)->references('id')->on($ref);
++            $restrict ? $fk->restrictOnDelete() : $fk->cascadeOnDelete();
++        });
++    }
++
++    /** Hentikan migration dengan pesan jelas bila data lama melanggar aturan baru. */
++    private function assertNoConflicts(): void
++    {
++        $checks = [
++            'Invoice bulanan dobel (subscription_id + period_month)' => "SELECT subscription_id, period_month FROM invoices
++                WHERE type = 'monthly' AND period_month IS NOT NULL
++                GROUP BY 1, 2 HAVING COUNT(*) > 1",
++            'gateway_transaction_id dobel di payments' => 'SELECT gateway, gateway_transaction_id FROM payments
++                WHERE gateway_transaction_id IS NOT NULL
++                GROUP BY 1, 2 HAVING COUNT(*) > 1',
++            'Port ODP dipakai lebih dari satu langganan aktif' => "SELECT odp_id, port_number FROM subscriptions
++                WHERE odp_id IS NOT NULL AND port_number IS NOT NULL AND status <> 'terminated'
++                GROUP BY 1, 2 HAVING COUNT(*) > 1",
++            'Invoice dengan nominal/diskon tidak valid' => 'SELECT id FROM invoices
++                WHERE amount < 0 OR discount_amount < 0 OR discount_amount > amount',
++            'Payment dengan nominal <= 0' => 'SELECT id FROM payments WHERE amount <= 0',
++            'Aset dengan stok negatif' => 'SELECT id FROM assets WHERE stock_qty < 0',
++            'Mutasi aset dengan qty <= 0' => 'SELECT id FROM asset_movements WHERE qty <= 0',
++            'Voucher rentang tanggal terbalik' => 'SELECT id FROM vouchers
++                WHERE valid_from IS NOT NULL AND valid_until IS NOT NULL AND valid_until < valid_from',
++            'Voucher used_count melebihi max_usage' => 'SELECT id FROM vouchers
++                WHERE max_usage IS NOT NULL AND used_count > max_usage',
++        ];
++
++        $problems = [];
++
++        foreach ($checks as $label => $sql) {
++            $rows = DB::select($sql);
++
++            if ($rows !== []) {
++                $sample = json_encode(array_slice($rows, 0, 5));
++                $problems[] = '- '.$label.': '.count($rows).' baris, contoh '.$sample;
++            }
++        }
++
++        if ($problems !== []) {
++            throw new RuntimeException(
++                "Migration dibatalkan karena data lama melanggar aturan baru. Bereskan dulu:\n".implode("\n", $problems)
++            );
++        }
++    }
++};
+diff --git a/docker-compose.swarm.yml b/docker-compose.swarm.yml
+index bf452a6..9d9cdc9 100644
+--- a/docker-compose.swarm.yml
++++ b/docker-compose.swarm.yml
+@@ -56,6 +56,8 @@ x-app-env: &app-env
+   MAIL_FROM_NAME:    ${MAIL_FROM_NAME:-Bangucup}
+ 
+   GENIEACS_NBI_URL:                ${GENIEACS_NBI_URL:-http://genieacs:7557}
++  WS_TICKET_SECRET: ${WS_TICKET_SECRET:-}
++  SANCTUM_USER_TOKEN_HOURS: ${SANCTUM_USER_TOKEN_HOURS:-12}
+   GENIEACS_ONLINE_THRESHOLD_MINUTES: ${GENIEACS_ONLINE_THRESHOLD_MINUTES:-15}
+ 
+   MIKROTIK_TIMEOUT:        ${MIKROTIK_TIMEOUT:-5}
+@@ -273,7 +275,10 @@ services:
+       REDIS_ADDR:     redis:6379
+       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+       REDIS_DB:       ${REDIS_DB:-0}
+-      ALLOWED_ORIGIN: "*"
++      # Secret bersama dengan Laravel (minimal 32 karakter). Gateway menolak start bila kosong.
++      WS_TICKET_SECRET: ${WS_TICKET_SECRET:-}
++      # Kosong = hanya same-origin (cukup bila frontend dan /ws satu domain lewat reverse proxy).
++      ALLOWED_ORIGIN: ${WS_ALLOWED_ORIGINS:-}
+ 
+ volumes:
+   bangucup_storage:
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 122f90c..91629ad 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -98,7 +98,10 @@ services:
+       REDIS_ADDR:     redis:6379
+       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+       REDIS_DB:       ${REDIS_DB:-0}
+-      ALLOWED_ORIGIN: "*"
++      # Secret bersama dengan Laravel (WS_TICKET_SECRET di .env, minimal 32 karakter).
++      WS_TICKET_SECRET: ${WS_TICKET_SECRET:-}
++      # Origin browser yang boleh membuka WebSocket (pisahkan dengan koma).
++      ALLOWED_ORIGIN: ${WS_ALLOWED_ORIGINS:-localhost:*}
+     depends_on:
+       - mikrotik-collector
+     networks:
+diff --git a/frontend/admin/src/hooks/useTrafficSocket.ts b/frontend/admin/src/hooks/useTrafficSocket.ts
+index f95e39a..ce90930 100644
+--- a/frontend/admin/src/hooks/useTrafficSocket.ts
++++ b/frontend/admin/src/hooks/useTrafficSocket.ts
+@@ -44,7 +44,7 @@ export function useTrafficSocket({
+   useEffect(() => {
+     const socket = new TrafficSocket(handleSnapshot, setStatus)
+     socketRef.current = socket
+-    socket.connect()
++    void socket.connect()
+ 
+     return () => {
+       socket.disconnect()
+diff --git a/frontend/admin/src/services/websocket/trafficSocket.ts b/frontend/admin/src/services/websocket/trafficSocket.ts
+index ffc3c4e..62468f6 100644
+--- a/frontend/admin/src/services/websocket/trafficSocket.ts
++++ b/frontend/admin/src/services/websocket/trafficSocket.ts
+@@ -1,3 +1,4 @@
++import { apiClient } from '@/services/api/client'
+ import type { RouterSnapshot, WsSubscribeMsg } from '@/types/realtime'
+ 
+ type SnapshotHandler = (snapshot: RouterSnapshot) => void
+@@ -10,6 +11,7 @@ export class TrafficSocket {
+   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+   private destroyed = false
+   private reconnectDelay = 2000
++  private connecting = false
+ 
+   private onSnapshot: SnapshotHandler
+   private onStatus: StatusHandler
+@@ -19,11 +21,32 @@ export class TrafficSocket {
+     this.onStatus   = onStatus
+   }
+ 
+-  connect() {
++  async connect() {
++    if (this.destroyed || this.connecting) return
+     if (this.ws?.readyState === WebSocket.OPEN) return
+ 
++    this.connecting = true
+     this.onStatus('connecting')
+-    this.ws = new WebSocket(WS_URL)
++
++    // Gateway hanya menerima koneksi dengan tiket sekali-pakai dari Laravel (berlaku 60 detik),
++    // jadi setiap (re)connect harus meminta tiket baru.
++    let ticket: string
++    try {
++      const res = await apiClient.post<{ data: { ticket: string } }>('/realtime/ticket')
++      ticket = res.data.data.ticket
++    } catch {
++      this.connecting = false
++      if (!this.destroyed) {
++        this.onStatus('disconnected')
++        this.scheduleReconnect()
++      }
++      return
++    }
++    this.connecting = false
++    if (this.destroyed) return
++
++    const sep = WS_URL.includes('?') ? '&' : '?'
++    this.ws = new WebSocket(`${WS_URL}${sep}ticket=${encodeURIComponent(ticket)}`)
+ 
+     this.ws.onopen = () => {
+       this.reconnectDelay = 2000
+@@ -77,7 +100,7 @@ export class TrafficSocket {
+   private scheduleReconnect() {
+     this.reconnectTimer = setTimeout(() => {
+       this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30_000)
+-      this.connect()
++      void this.connect()
+     }, this.reconnectDelay)
+   }
+ }
+diff --git a/routes/api.php b/routes/api.php
+index dd3c017..bbc2bc9 100644
+--- a/routes/api.php
++++ b/routes/api.php
+@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\MikrotikRouterController;
+ use App\Http\Controllers\Api\OdpController;
+ use App\Http\Controllers\Api\PackageController;
+ use App\Http\Controllers\Api\PaymentController;
++use App\Http\Controllers\Api\RealtimeController;
+ use App\Http\Controllers\Api\SubscriptionController;
+ use App\Http\Controllers\Api\TicketController;
+ use App\Http\Controllers\Api\UserController;
+@@ -64,6 +65,10 @@ Route::middleware('auth:sanctum')->group(function () {
+     // (dicek di controller), bukan oleh role user.
+     Route::get('internal/routers', [MikrotikRouterController::class, 'collector']);
+ 
++    // Tiket WebSocket realtime (untuk halaman Monitoring)
++    Route::post('realtime/ticket', [RealtimeController::class, 'ticket'])
++        ->middleware('permission:view_routers');
++
+     // Customers
+     $crud('customers', CustomerController::class, 'customers');
+ 
+diff --git a/services/realtime-gateway/internal/config/config.go b/services/realtime-gateway/internal/config/config.go
+index 6738ac9..8216836 100644
+--- a/services/realtime-gateway/internal/config/config.go
++++ b/services/realtime-gateway/internal/config/config.go
+@@ -3,6 +3,7 @@ package config
+ import (
+ 	"os"
+ 	"strconv"
++	"strings"
+ )
+ 
+ type Config struct {
+@@ -14,8 +15,12 @@ type Config struct {
+ 	RedisPassword string
+ 	RedisDB       int
+ 
+-	// CORS — origin frontend React
+-	AllowedOrigin string
++	// Origin browser yang boleh membuka WebSocket (pola host, mis. "app.contoh.id" atau "localhost:*").
++	// Kosong = hanya same-origin (aman bila di belakang reverse proxy satu domain).
++	AllowedOrigins []string
++
++	// Secret bersama dengan Laravel untuk memverifikasi tiket WebSocket (minimal 32 karakter).
++	TicketSecret string
+ }
+ 
+ func Load() *Config {
+@@ -26,7 +31,8 @@ func Load() *Config {
+ 		RedisAddr:     getEnv("REDIS_ADDR", "redis:6379"),
+ 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
+ 		RedisDB:       redisDB,
+-		AllowedOrigin: getEnv("ALLOWED_ORIGIN", "*"),
++		AllowedOrigins: splitList(getEnv("ALLOWED_ORIGIN", "")),
++		TicketSecret:   getEnv("WS_TICKET_SECRET", ""),
+ 	}
+ }
+ 
+@@ -36,3 +42,13 @@ func getEnv(key, fallback string) string {
+ 	}
+ 	return fallback
+ }
++
++func splitList(v string) []string {
++	var out []string
++	for _, part := range strings.Split(v, ",") {
++		if part = strings.TrimSpace(part); part != "" {
++			out = append(out, part)
++		}
++	}
++	return out
++}
+diff --git a/services/realtime-gateway/internal/gateway/gateway.go b/services/realtime-gateway/internal/gateway/gateway.go
+index fe99fe4..4f6286c 100644
+--- a/services/realtime-gateway/internal/gateway/gateway.go
++++ b/services/realtime-gateway/internal/gateway/gateway.go
+@@ -5,8 +5,10 @@ import (
+ 	"encoding/json"
+ 	"log"
+ 	"net/http"
++	"time"
+ 
+ 	"github.com/bangucup/realtime-gateway/internal/config"
++	"github.com/bangucup/realtime-gateway/internal/ticket"
+ 	"github.com/coder/websocket"
+ 	"github.com/coder/websocket/wsjson"
+ 	"github.com/redis/go-redis/v9"
+@@ -71,13 +73,36 @@ func (g *Gateway) StartRedisSubscriber(ctx context.Context) {
+ 
+ // ServeHTTP handles WebSocket upgrade requests.
+ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	// 1. Autentikasi: tiket bertanda tangan dari Laravel (POST /api/realtime/ticket).
++	claims, err := ticket.Verify(r.URL.Query().Get("ticket"), g.cfg.TicketSecret, time.Now())
++	if err != nil {
++		log.Printf("[gateway] koneksi ditolak: %v", err)
++		http.Error(w, "unauthorized", http.StatusUnauthorized)
++		return
++	}
++
++	// 2. Tiket hanya boleh dipakai sekali: tandai jti di Redis selama 2 menit.
++	fresh, err := g.rdb.SetNX(r.Context(), "bangucup:ws-jti:"+claims.JTI, 1, 2*time.Minute).Result()
++	if err != nil {
++		log.Printf("[gateway] redis error saat cek jti: %v", err)
++		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
++		return
++	}
++	if !fresh {
++		log.Printf("[gateway] koneksi ditolak: tiket sudah dipakai (user %d)", claims.UserID)
++		http.Error(w, "unauthorized", http.StatusUnauthorized)
++		return
++	}
++
+ 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+-		OriginPatterns: []string{g.cfg.AllowedOrigin},
++		OriginPatterns: g.cfg.AllowedOrigins,
+ 	})
+ 	if err != nil {
+ 		log.Printf("[gateway] accept error: %v", err)
+ 		return
+ 	}
++	defer conn.CloseNow()
++	conn.SetReadLimit(4096) // pesan dari browser hanya subscribe/unsubscribe kecil
+ 
+ 	c := newClient(conn)
+ 	g.hub.register(c)
+diff --git a/services/realtime-gateway/internal/ticket/ticket.go b/services/realtime-gateway/internal/ticket/ticket.go
+new file mode 100644
+index 0000000..c8d18b7
+--- /dev/null
++++ b/services/realtime-gateway/internal/ticket/ticket.go
+@@ -0,0 +1,69 @@
++// Package ticket memverifikasi tiket WebSocket yang diterbitkan Laravel
++// (lihat app/Support/WsTicket.php di sisi PHP).
++//
++// Format: base64url(JSON{uid,exp,jti}) "." hex(HMAC-SHA256(secret, base64url(...)))
++package ticket
++
++import (
++	"crypto/hmac"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"strings"
++	"time"
++)
++
++// Claims adalah isi tiket yang sudah terverifikasi.
++type Claims struct {
++	UserID int64  `json:"uid"`
++	Expiry int64  `json:"exp"`
++	JTI    string `json:"jti"`
++}
++
++var (
++	ErrMalformed = errors.New("ticket: format tidak valid")
++	ErrSignature = errors.New("ticket: tanda tangan tidak valid")
++	ErrExpired   = errors.New("ticket: kedaluwarsa")
++)
++
++// Verify memeriksa tanda tangan dan masa berlaku tiket.
++func Verify(raw, secret string, now time.Time) (*Claims, error) {
++	if secret == "" {
++		return nil, ErrSignature
++	}
++
++	parts := strings.Split(raw, ".")
++	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
++		return nil, ErrMalformed
++	}
++	payload, sigHex := parts[0], parts[1]
++
++	gotSig, err := hex.DecodeString(sigHex)
++	if err != nil {
++		return nil, ErrMalformed
++	}
++
++	mac := hmac.New(sha256.New, []byte(secret))
++	mac.Write([]byte(payload))
++	if !hmac.Equal(gotSig, mac.Sum(nil)) { // perbandingan waktu-konstan
++		return nil, ErrSignature
++	}
++
++	body, err := base64.RawURLEncoding.DecodeString(payload)
++	if err != nil {
++		return nil, ErrMalformed
++	}
++
++	var c Claims
++	if err := json.Unmarshal(body, &c); err != nil || c.JTI == "" || c.UserID <= 0 {
++		return nil, ErrMalformed
++	}
++
++	if now.Unix() >= c.Expiry {
++		return nil, ErrExpired
++	}
++
++	return &c, nil
++}
+diff --git a/services/realtime-gateway/internal/ticket/ticket_test.go b/services/realtime-gateway/internal/ticket/ticket_test.go
+new file mode 100644
+index 0000000..44b44ed
+--- /dev/null
++++ b/services/realtime-gateway/internal/ticket/ticket_test.go
+@@ -0,0 +1,70 @@
++package ticket
++
++import (
++	"crypto/hmac"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"fmt"
++	"os"
++	"testing"
++	"time"
++)
++
++const secret = "0123456789abcdef0123456789abcdef"
++
++func sign(payloadJSON, key string) string {
++	p := base64.RawURLEncoding.EncodeToString([]byte(payloadJSON))
++	m := hmac.New(sha256.New, []byte(key))
++	m.Write([]byte(p))
++	return p + "." + hex.EncodeToString(m.Sum(nil))
++}
++
++func TestVerifyValid(t *testing.T) {
++	now := time.Now()
++	tk := sign(fmt.Sprintf(`{"uid":7,"exp":%d,"jti":"abc"}`, now.Add(time.Minute).Unix()), secret)
++	c, err := Verify(tk, secret, now)
++	if err != nil || c.UserID != 7 || c.JTI != "abc" {
++		t.Fatalf("seharusnya valid, got %v %v", c, err)
++	}
++}
++
++func TestVerifyRejects(t *testing.T) {
++	now := time.Now()
++	exp := now.Add(time.Minute).Unix()
++	valid := sign(fmt.Sprintf(`{"uid":7,"exp":%d,"jti":"abc"}`, exp), secret)
++	otherPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"uid":1,"exp":9999999999,"jti":"x"}`))
++
++	cases := map[string]struct {
++		ticket, key string
++		want        error
++	}{
++		"secret salah":        {valid, "kunci-lain-kunci-lain-kunci-lain!!", ErrSignature},
++		"secret kosong":       {valid, "", ErrSignature},
++		"kedaluwarsa":         {sign(fmt.Sprintf(`{"uid":7,"exp":%d,"jti":"abc"}`, now.Add(-time.Second).Unix()), secret), secret, ErrExpired},
++		"payload diganti":     {otherPayload + "." + valid[len(valid)-64:], secret, ErrSignature},
++		"tanpa titik":         {"abc", secret, ErrMalformed},
++		"kosong":              {"", secret, ErrMalformed},
++		"signature bukan hex": {"abc.zzzz", secret, ErrMalformed},
++		"tanpa jti":           {sign(fmt.Sprintf(`{"uid":7,"exp":%d}`, exp), secret), secret, ErrMalformed},
++		"uid nol":             {sign(fmt.Sprintf(`{"uid":0,"exp":%d,"jti":"a"}`, exp), secret), secret, ErrMalformed},
++	}
++	for name, tc := range cases {
++		if _, err := Verify(tc.ticket, tc.key, now); err != tc.want {
++			t.Errorf("%s: want %v, got %v", name, tc.want, err)
++		}
++	}
++}
++
++// Interop: tiket dibuat oleh PHP (WsTicket::make) dan diverifikasi di Go.
++// Dijalankan bila env PHP_TICKET diisi.
++func TestVerifyTicketFromPHP(t *testing.T) {
++	tk := os.Getenv("PHP_TICKET")
++	if tk == "" {
++		t.Skip("PHP_TICKET tidak diisi")
++	}
++	c, err := Verify(tk, secret, time.Now())
++	if err != nil || c.UserID != 42 {
++		t.Fatalf("tiket dari PHP harus valid: %v %v", c, err)
++	}
++}
+diff --git a/services/realtime-gateway/main.go b/services/realtime-gateway/main.go
+index 435fcdf..cf1e487 100644
+--- a/services/realtime-gateway/main.go
++++ b/services/realtime-gateway/main.go
+@@ -20,6 +20,15 @@ func main() {
+ 
+ 	cfg := config.Load()
+ 
++	if len(cfg.TicketSecret) < 32 {
++		log.Fatal("[main] WS_TICKET_SECRET wajib diisi (minimal 32 karakter); gateway tidak mau jalan tanpa autentikasi")
++	}
++	for _, o := range cfg.AllowedOrigins {
++		if o == "*" {
++			log.Println("[main] PERINGATAN: ALLOWED_ORIGIN=* mengizinkan semua situs; batasi ke domain Anda")
++		}
++	}
++
+ 	rdb := redis.NewClient(&redis.Options{
+ 		Addr:     cfg.RedisAddr,
+ 		Password: cfg.RedisPassword,

@@ -1,0 +1,259 @@
+diff --git a/app/Console/Commands/AutoIsolir.php b/app/Console/Commands/AutoIsolir.php
+index 196c9a5..8ff039a 100644
+--- a/app/Console/Commands/AutoIsolir.php
++++ b/app/Console/Commands/AutoIsolir.php
+@@ -5,11 +5,21 @@ namespace App\Console\Commands;
+ use App\Models\IsolirLog;
+ use App\Models\Subscription;
+ use App\Services\MikrotikService;
++use Carbon\CarbonInterface;
+ use Illuminate\Console\Command;
++use Illuminate\Database\Eloquent\Builder;
++use Illuminate\Support\Facades\DB;
++use Illuminate\Support\Facades\Log;
+ 
+ class AutoIsolir extends Command
+ {
+-    protected $signature = 'billing:auto-isolir {--dry-run : Hanya tampilkan yang akan di-isolir}';
++    /** Setelah sekian kegagalan beruntun pada satu router, sisa langganan router itu dilewati. */
++    private const MAX_CONSECUTIVE_FAILURES = 3;
++
++    protected $signature = 'billing:auto-isolir
++        {--dry-run : Hanya tampilkan yang akan di-isolir, tanpa mengubah apa pun}
++        {--limit= : Isolir paling banyak N langganan pada eksekusi ini (untuk rollout bertahap)}
++        {--force : Lewati batas pengaman jumlah isolir per eksekusi}';
+ 
+     protected $description = 'Isolir otomatis langganan aktif yang punya invoice overdue melewati masa tenggang';
+ 
+@@ -17,65 +27,159 @@ class AutoIsolir extends Command
+     {
+         $graceDays = (int) config('billing.isolir_grace_days', 3);
+         $cutoff    = today()->subDays($graceDays);
++        $dryRun    = (bool) $this->option('dry-run');
++        $force     = (bool) $this->option('force');
++        $limit     = $this->option('limit') !== null ? (int) $this->option('limit') : null;
+ 
+-        $subscriptions = Subscription::query()
+-            ->with('mikrotikRouter')
+-            ->where('status', 'active')
+-            ->whereHas('invoices', function ($q) use ($cutoff) {
+-                $q->where('status', 'overdue')
+-                    ->whereDate('due_date', '<=', $cutoff);
+-            })
+-            ->get();
++        if ($limit !== null && $limit < 1) {
++            $this->error('--limit harus berupa angka 1 atau lebih.');
+ 
+-        if ($subscriptions->isEmpty()) {
++            return self::FAILURE;
++        }
++
++        $candidates = $this->eligible($cutoff)->with('mikrotikRouter')->orderBy('id')->get();
++        $total      = $candidates->count();
++
++        if ($total === 0) {
+             $this->info('Tidak ada langganan yang perlu di-isolir.');
+ 
+             return self::SUCCESS;
+         }
+ 
+-        $isolir = 0;
+-        $skip   = 0;
++        // ── Pengaman jumlah ────────────────────────────────────────────────
++        // Lonjakan kandidat biasanya tanda ada yang salah (scheduler lama mati, data tagihan
++        // rusak, penyalaan pertama). Lebih baik berhenti dan minta konfirmasi manusia.
++        $ceiling = (int) config('billing.isolir_max_per_run', 20);
++
++        if ($limit === null && ! $force && $total > $ceiling) {
++            $message = "Auto-isolir DIBATALKAN: {$total} kandidat melebihi batas pengaman {$ceiling}. "
++                .'Periksa data tagihan, lalu jalankan manual dengan --limit=N (bertahap) atau --force.';
+ 
+-        foreach ($subscriptions as $subscription) {
+-            $label = "Subscription #{$subscription->id} ({$subscription->pppoe_username})";
++            if ($dryRun) {
++                $this->warn("PERINGATAN: eksekusi nyata akan dibatalkan karena {$total} kandidat melebihi batas {$ceiling}.");
++            } else {
++                $this->error($message);
++                Log::critical($message, ['kandidat' => $total, 'batas' => $ceiling]);
+ 
+-            if (! $subscription->mikrotikRouter) {
++                return self::FAILURE;
++            }
++        }
++
++        if ($limit !== null) {
++            $candidates = $candidates->take($limit);
++            $this->info("Dibatasi --limit={$limit} dari {$total} kandidat.");
++        }
++
++        // ── Cek koneksi tiap router sekali di awal ───────────────────────────
++        // Router mati tidak boleh membuat proses menunggu timeout untuk setiap pelanggannya.
++        $unreachable = [];
++
++        if (! $dryRun) {
++            foreach ($candidates->pluck('mikrotikRouter')->filter()->unique('id') as $router) {
++                if (! $mikrotik->testConnection($router)) {
++                    $unreachable[$router->id] = true;
++                    $this->error("Router {$router->name} tidak terjangkau; langganannya dilewati.");
++                    Log::error("Auto-isolir: router {$router->name} (#{$router->id}) tidak terjangkau.");
++                }
++            }
++        }
++
++        $isolir      = 0;
++        $skip        = 0;
++        $failed      = 0;
++        $failStreak  = [];
++
++        foreach ($candidates as $subscription) {
++            $label  = "Subscription #{$subscription->id} ({$subscription->pppoe_username})";
++            $router = $subscription->mikrotikRouter;
++
++            if (! $router) {
+                 $this->warn("{$label}: router tidak dikonfigurasi, lewati.");
+                 $skip++;
+ 
+                 continue;
+             }
+ 
+-            if ($this->option('dry-run')) {
++            if ($dryRun) {
+                 $this->line("{$label}: akan di-isolir.");
+                 $isolir++;
+ 
+                 continue;
+             }
+ 
+-            $ok = $mikrotik->isolir($subscription->mikrotikRouter, $subscription->pppoe_username);
++            if (isset($unreachable[$router->id])) {
++                $skip++;
++
++                continue;
++            }
++
++            if (($failStreak[$router->id] ?? 0) >= self::MAX_CONSECUTIVE_FAILURES) {
++                $this->warn("{$label}: dilewati, router {$router->name} gagal berturut-turut.");
++                $skip++;
+ 
+-            if (! $ok) {
+-                $this->error("{$label}: gagal menghubungi MikroTik.");
++                continue;
++            }
++
++            // Cek ulang tepat sebelum memutus: pelanggan mungkin baru saja membayar
++            // sejak daftar kandidat diambil.
++            if (! $this->eligible($cutoff)->whereKey($subscription->id)->exists()) {
++                $this->line("{$label}: sudah tidak memenuhi syarat (kemungkinan baru lunas), dilewati.");
+                 $skip++;
+ 
+                 continue;
+             }
+ 
+-            $subscription->update(['status' => 'isolir']);
+-            IsolirLog::create([
+-                'subscription_id' => $subscription->id,
+-                'action'          => 'isolir',
+-                'reason'          => "Auto-isolir: tagihan overdue lebih dari {$graceDays} hari masa tenggang",
+-                'triggered_by'    => 'system',
+-            ]);
++            if (! $mikrotik->isolir($router, $subscription->pppoe_username)) {
++                $this->error("{$label}: gagal mengisolir di MikroTik.");
++                Log::warning("Auto-isolir: gagal pada subscription #{$subscription->id} di router {$router->name}.");
++                $failStreak[$router->id] = ($failStreak[$router->id] ?? 0) + 1;
++                $failed++;
++
++                continue;
++            }
++
++            $failStreak[$router->id] = 0;
++
++            try {
++                DB::transaction(function () use ($subscription, $graceDays) {
++                    $subscription->update(['status' => 'isolir']);
++                    IsolirLog::create([
++                        'subscription_id' => $subscription->id,
++                        'action'          => 'isolir',
++                        'reason'          => "Auto-isolir: tagihan overdue lebih dari {$graceDays} hari masa tenggang",
++                        'triggered_by'    => 'system',
++                    ]);
++                });
++            } catch (\Throwable $e) {
++                // MikroTik sudah terisolir tetapi database gagal diperbarui: perlu perhatian manusia.
++                Log::critical("Auto-isolir: subscription #{$subscription->id} SUDAH diisolir di MikroTik tetapi gagal dicatat di database.", [
++                    'error' => $e->getMessage(),
++                ]);
++                $this->error("{$label}: terisolir di MikroTik tapi gagal dicatat di database! Cek log.");
++                $failed++;
++
++                continue;
++            }
+ 
+             $this->info("{$label}: di-isolir.");
+             $isolir++;
+         }
+ 
+-        $this->info("Selesai: {$isolir} di-isolir, {$skip} dilewati.");
++        $summary = "Selesai: {$isolir} di-isolir, {$skip} dilewati, {$failed} gagal.";
++        $this->info($summary);
++        Log::info('Auto-isolir '.($dryRun ? '(dry-run) ' : '').$summary);
++
++        return $failed > 0 ? self::FAILURE : self::SUCCESS;
++    }
+ 
+-        return self::SUCCESS;
++    /** Langganan aktif yang punya invoice overdue melewati masa tenggang. */
++    private function eligible(CarbonInterface $cutoff): Builder
++    {
++        return Subscription::query()
++            ->where('status', 'active')
++            ->whereHas('invoices', function ($q) use ($cutoff) {
++                $q->where('status', 'overdue')
++                    ->whereDate('due_date', '<=', $cutoff);
++            });
+     }
+ }
+diff --git a/config/billing.php b/config/billing.php
+index 740f836..151174d 100644
+--- a/config/billing.php
++++ b/config/billing.php
+@@ -3,4 +3,13 @@
+ return [
+     // Masa tenggang (hari) setelah due_date sebelum auto-isolir dijalankan
+     'isolir_grace_days' => (int) env('BILLING_ISOLIR_GRACE_DAYS', 3),
++
++    // Saklar scheduler isolir otomatis. Default MATI: nyalakan dengan sadar setelah
++    // `php artisan billing:auto-isolir --dry-run` menunjukkan daftar yang masuk akal.
++    // Perintah manual tetap bisa dijalankan kapan saja.
++    'auto_isolir_enabled' => (bool) env('BILLING_AUTO_ISOLIR_ENABLED', false),
++
++    // Batas pengaman: bila kandidat isolir melebihi angka ini dalam satu eksekusi,
++    // seluruh eksekusi dibatalkan (kecuali memakai --limit atau --force).
++    'isolir_max_per_run' => (int) env('BILLING_ISOLIR_MAX_PER_RUN', 20),
+ ];
+diff --git a/docker-compose.swarm.yml b/docker-compose.swarm.yml
+index 9d9cdc9..7d054fb 100644
+--- a/docker-compose.swarm.yml
++++ b/docker-compose.swarm.yml
+@@ -58,6 +58,8 @@ x-app-env: &app-env
+   GENIEACS_NBI_URL:                ${GENIEACS_NBI_URL:-http://genieacs:7557}
+   WS_TICKET_SECRET: ${WS_TICKET_SECRET:-}
+   SANCTUM_USER_TOKEN_HOURS: ${SANCTUM_USER_TOKEN_HOURS:-12}
++  BILLING_AUTO_ISOLIR_ENABLED: ${BILLING_AUTO_ISOLIR_ENABLED:-false}
++  BILLING_ISOLIR_MAX_PER_RUN: ${BILLING_ISOLIR_MAX_PER_RUN:-20}
+   GENIEACS_ONLINE_THRESHOLD_MINUTES: ${GENIEACS_ONLINE_THRESHOLD_MINUTES:-15}
+ 
+   MIKROTIK_TIMEOUT:        ${MIKROTIK_TIMEOUT:-5}
+diff --git a/routes/console.php b/routes/console.php
+index 656bc19..4109a4e 100644
+--- a/routes/console.php
++++ b/routes/console.php
+@@ -23,7 +23,8 @@ Schedule::command('billing:mark-overdue')
+ 
+ Schedule::command('billing:auto-isolir')
+     ->dailyAt('01:00')
+-    ->withoutOverlapping();
++    ->withoutOverlapping(120)
++    ->when(fn () => (bool) config('billing.auto_isolir_enabled'));
+ 
+ // ─── Keamanan ─────────────────────────────────────────────────────
+ Schedule::command('sanctum:prune-expired --hours=24')->daily();

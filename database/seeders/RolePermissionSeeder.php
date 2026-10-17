@@ -23,6 +23,7 @@ class RolePermissionSeeder extends Seeder
             'odps',
             'vouchers',
             'devices',
+            'routers',
         ];
 
         $actions = ['view', 'create', 'update', 'delete'];
@@ -65,6 +66,8 @@ class RolePermissionSeeder extends Seeder
             array_map(fn ($a) => "{$a}_payments", ['view', 'create', 'update']),
             array_map(fn ($a) => "{$a}_tickets", ['view', 'create', 'update']),
             array_map(fn ($a) => "{$a}_vouchers", ['view', 'create', 'update']),
+            // Dropdown paket & ODP di form pelanggan/langganan
+            ['view_packages', 'view_odps'],
         ))->get();
         $staff->syncPermissions($staffPermissions);
 
@@ -75,7 +78,7 @@ class RolePermissionSeeder extends Seeder
             array_map(fn ($a) => "{$a}_tickets", ['view', 'update']),
             array_map(fn ($a) => "{$a}_devices", ['view', 'update']),
             array_map(fn ($a) => "{$a}_assets", ['view', 'update']),
-            ['view_odps', 'view_subscriptions'],
+            ['view_odps', 'view_subscriptions', 'view_customers', 'view_routers'],
         ))->get();
         $teknisi->syncPermissions($teknisiPermissions);
 

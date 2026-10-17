@@ -8,6 +8,7 @@ use App\Models\MikrotikRouter;
 use App\Services\MikrotikService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class MikrotikRouterController extends ApiController
 {
@@ -34,7 +35,14 @@ class MikrotikRouterController extends ApiController
 
     public function update(StoreRouterRequest $request, MikrotikRouter $router): JsonResponse
     {
-        $router->update($request->validated());
+        $data = $request->validated();
+
+        // Password kosong saat edit = jangan ubah password yang tersimpan.
+        if (empty($data['password'])) {
+            unset($data['password']);
+        }
+
+        $router->update($data);
 
         return $this->success(new MikrotikRouterResource($router), 'Router berhasil diperbarui');
     }
@@ -65,5 +73,40 @@ class MikrotikRouterController extends ApiController
             'timestamp' => now()->toIso8601String(),
             'interfaces'=> $traffic,
         ]);
+    }
+
+    /**
+     * Daftar router lengkap dengan kredensial, KHUSUS untuk collector Go.
+     *
+     * Hanya token yang secara eksplisit punya ability `routers:collect` yang diterima.
+     * Token login biasa (ability `*`) sengaja ditolak, jadi password router
+     * tidak pernah sampai ke browser atau user biasa.
+     */
+    public function collector(Request $request): JsonResponse
+    {
+        $token = $request->user()?->currentAccessToken();
+
+        abort_unless(
+            $token instanceof PersonalAccessToken
+                && in_array('routers:collect', $token->abilities ?? [], true),
+            403,
+            'Token tidak memiliki ability routers:collect.'
+        );
+
+        $routers = MikrotikRouter::where('is_active', true)
+            ->orderBy('id')
+            ->get()
+            ->map(fn (MikrotikRouter $r) => [
+                'id'        => $r->id,
+                'name'      => $r->name,
+                'host'      => $r->host,
+                'api_port'  => $r->api_port,
+                'username'  => $r->username,
+                'password'  => $r->password, // didekripsi oleh cast `encrypted`
+                'is_active' => true,
+            ])
+            ->values();
+
+        return $this->success($routers);
     }
 }

@@ -23,4 +23,8 @@ Schedule::command('billing:mark-overdue')
 
 Schedule::command('billing:auto-isolir')
     ->dailyAt('01:00')
-    ->withoutOverlapping();
+    ->withoutOverlapping(120)
+    ->when(fn () => (bool) config('billing.auto_isolir_enabled'));
+
+// ─── Keamanan ─────────────────────────────────────────────────────
+Schedule::command('sanctum:prune-expired --hours=24')->daily();

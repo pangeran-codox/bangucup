@@ -1,0 +1,30 @@
+diff --git a/app/Services/GenieAcsService.php b/app/Services/GenieAcsService.php
+index 4f8e546..d39f323 100644
+--- a/app/Services/GenieAcsService.php
++++ b/app/Services/GenieAcsService.php
+@@ -113,7 +113,9 @@ class GenieAcsService
+                 : $this->extractValue($rawDevice, $paths['brand_model']),
+             'rx_power' => $this->extractValue($rawDevice, $paths['rx_power']),
+             'ssid' => $this->extractValue($rawDevice, $paths['ssid']),
+-            'last_inform_at' => $lastInform ? Carbon::parse($lastInform) : null,
++            // GenieACS mengirim waktu UTC; ubah ke zona aplikasi supaya tersimpan konsisten
++            // (Eloquent menyimpan jam dinding sesuai zona instance Carbon, tanpa konversi).
++            'last_inform_at' => $lastInform ? Carbon::parse($lastInform)->setTimezone(config('app.timezone')) : null,
+         ];
+     }
+ 
+diff --git a/config/app.php b/config/app.php
+index 423eed5..e526d78 100644
+--- a/config/app.php
++++ b/config/app.php
+@@ -65,7 +65,9 @@ return [
+     |
+     */
+ 
+-    'timezone' => 'UTC',
++    // Waktu aplikasi = WIB. Mempengaruhi now()/today(), jam scheduler, dan nilai timestamp yang
++    // disimpan. Jangan diubah setelah ada data asli tanpa mengonversi kolom timestamp lama.
++    'timezone' => env('APP_TIMEZONE', 'Asia/Jakarta'),
+ 
+     /*
+     |--------------------------------------------------------------------------

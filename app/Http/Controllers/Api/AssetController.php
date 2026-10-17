@@ -8,7 +8,9 @@ use App\Models\Asset;
 use App\Models\AssetMovement;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class AssetController extends ApiController
 {
@@ -24,7 +26,7 @@ class AssetController extends ApiController
             $query->where('name', 'ilike', "%{$request->search}%");
         }
 
-        $assets = $query->orderBy('name')->paginate($request->integer('per_page', 20));
+        $assets = $query->orderBy('name')->paginate(min($request->integer('per_page', 20), 100));
 
         return $this->success([
             'data' => AssetResource::collection($assets),
@@ -72,11 +74,19 @@ class AssetController extends ApiController
             'note'            => ['nullable', 'string', 'max:255'],
         ]);
 
-        if ($data['type'] === 'out' && $asset->stock_qty < $data['qty']) {
-            return $this->error("Stok tidak cukup. Stok saat ini: {$asset->stock_qty} {$asset->unit}.", 422);
-        }
+        // Kunci baris aset supaya dua mutasi bersamaan tidak membuat stok negatif.
+        $movement = DB::transaction(function () use ($data, $asset) {
+            $locked = Asset::lockForUpdate()->findOrFail($asset->id);
 
-        $movement = AssetMovement::create(array_merge($data, ['asset_id' => $asset->id]));
+            if ($data['type'] === 'out' && $locked->stock_qty < $data['qty']) {
+                throw ValidationException::withMessages([
+                    'qty' => "Stok tidak cukup. Stok saat ini: {$locked->stock_qty} {$locked->unit}.",
+                ]);
+            }
+
+            return AssetMovement::create(array_merge($data, ['asset_id' => $locked->id]));
+        });
+
         $asset->refresh();
 
         return $this->created([
@@ -89,7 +99,7 @@ class AssetController extends ApiController
     {
         $movements = $asset->movements()
             ->orderByDesc('created_at')
-            ->paginate($request->integer('per_page', 20));
+            ->paginate(min($request->integer('per_page', 20), 100));
 
         return $this->success([
             'data' => $movements->items(),

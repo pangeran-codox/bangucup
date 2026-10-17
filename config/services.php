@@ -28,6 +28,12 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    'realtime' => [
+        // Secret bersama dengan realtime-gateway (env WS_TICKET_SECRET, minimal 32 karakter).
+        'ticket_secret' => env('WS_TICKET_SECRET'),
+        'ticket_ttl'    => (int) env('WS_TICKET_TTL', 60),
+    ],
+
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),

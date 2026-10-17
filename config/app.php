@@ -65,7 +65,9 @@ return [
     |
     */
 
-    'timezone' => 'UTC',
+    // Waktu aplikasi = WIB. Mempengaruhi now()/today(), jam scheduler, dan nilai timestamp yang
+    // disimpan. Jangan diubah setelah ada data asli tanpa mengonversi kolom timestamp lama.
+    'timezone' => env('APP_TIMEZONE', 'Asia/Jakarta'),
 
     /*
     |--------------------------------------------------------------------------

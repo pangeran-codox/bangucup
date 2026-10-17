@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/bangucup/realtime-gateway/internal/config"
+	"github.com/bangucup/realtime-gateway/internal/ticket"
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 	"github.com/redis/go-redis/v9"
@@ -71,13 +73,36 @@ func (g *Gateway) StartRedisSubscriber(ctx context.Context) {
 
 // ServeHTTP handles WebSocket upgrade requests.
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 1. Autentikasi: tiket bertanda tangan dari Laravel (POST /api/realtime/ticket).
+	claims, err := ticket.Verify(r.URL.Query().Get("ticket"), g.cfg.TicketSecret, time.Now())
+	if err != nil {
+		log.Printf("[gateway] koneksi ditolak: %v", err)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// 2. Tiket hanya boleh dipakai sekali: tandai jti di Redis selama 2 menit.
+	fresh, err := g.rdb.SetNX(r.Context(), "bangucup:ws-jti:"+claims.JTI, 1, 2*time.Minute).Result()
+	if err != nil {
+		log.Printf("[gateway] redis error saat cek jti: %v", err)
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !fresh {
+		log.Printf("[gateway] koneksi ditolak: tiket sudah dipakai (user %d)", claims.UserID)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{g.cfg.AllowedOrigin},
+		OriginPatterns: g.cfg.AllowedOrigins,
 	})
 	if err != nil {
 		log.Printf("[gateway] accept error: %v", err)
 		return
 	}
+	defer conn.CloseNow()
+	conn.SetReadLimit(4096) // pesan dari browser hanya subscribe/unsubscribe kecil
 
 	c := newClient(conn)
 	g.hub.register(c)

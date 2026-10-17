@@ -16,6 +16,10 @@ class MikrotikRouter extends Model
         'notes',
     ];
 
+    protected $hidden = [
+        'password',
+    ];
+
     protected $casts = [
         'password' => 'encrypted',
         'is_active' => 'boolean',

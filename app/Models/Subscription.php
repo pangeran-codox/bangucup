@@ -15,6 +15,7 @@ class Subscription extends Model
         'customer_id',
         'package_id',
         'odp_id',
+        'mikrotik_router_id',
         'port_number',
         'pppoe_username',
         'pppoe_password',
@@ -76,5 +77,16 @@ class Subscription extends Model
     public function mikrotikRouter()
     {
         return $this->belongsTo(MikrotikRouter::class);
+    }
+
+    /** Apakah port ODP ini sudah dipakai langganan lain yang belum terminated? */
+    public static function portTaken(int $odpId, int $port, ?int $ignoreId = null): bool
+    {
+        return static::query()
+            ->where('odp_id', $odpId)
+            ->where('port_number', $port)
+            ->where('status', '!=', 'terminated')
+            ->when($ignoreId, fn ($q) => $q->where('id', '!=', $ignoreId))
+            ->exists();
     }
 }

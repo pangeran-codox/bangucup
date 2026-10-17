@@ -8,7 +8,9 @@ use App\Models\Payment;
 use App\Services\BillingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class PaymentController extends ApiController
 {
@@ -28,7 +30,7 @@ class PaymentController extends ApiController
 
         $payments = $query
             ->orderByDesc('created_at')
-            ->paginate($request->integer('per_page', 20));
+            ->paginate(min($request->integer('per_page', 20), 100));
 
         return $this->success([
             'data' => PaymentResource::collection($payments),
@@ -48,27 +50,72 @@ class PaymentController extends ApiController
         return $this->success(new PaymentResource($payment));
     }
 
+    /**
+     * Catat pembayaran MANUAL (tunai/transfer).
+     *
+     * Pembayaran dari payment gateway (midtrans/xendit) tidak boleh masuk lewat sini;
+     * itu harus lewat webhook yang memverifikasi signature.
+     */
     public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
-            'invoice_id' => ['required', 'exists:invoices,id'],
-            'gateway'    => ['required', Rule::in(['midtrans', 'xendit', 'manual', 'other'])],
-            'method'     => ['nullable', 'string', 'max:50'],
-            'amount'     => ['required', 'numeric', 'min:0'],
-            'status'     => ['nullable', Rule::in(['pending', 'success', 'failed', 'expired'])],
-            'paid_at'    => ['nullable', 'datetime'],
+            'invoice_id'             => ['required', 'integer', 'exists:invoices,id'],
+            'gateway'                => ['required', Rule::in(['manual', 'other'])],
+            'gateway_transaction_id' => ['nullable', 'string', 'max:150', 'unique:payments,gateway_transaction_id'],
+            'method'                 => ['nullable', 'string', 'max:50'],
+            'amount'                 => ['required', 'numeric', 'min:0.01'],
+            'status'                 => ['nullable', Rule::in(['pending', 'success', 'failed', 'expired'])],
+            'paid_at'                => ['nullable', 'date', 'before_or_equal:now'],
         ]);
 
-        $payment = Payment::create($data);
+        $status = $data['status'] ?? 'pending';
 
-        // Jika sukses, update status invoice
-        if (($data['status'] ?? 'pending') === 'success') {
-            $invoice = Invoice::find($data['invoice_id']);
+        [$payment, $invoice] = DB::transaction(function () use ($data, $status, $request) {
+            // Kunci baris invoice supaya dua pembayaran bersamaan tidak lolos bersamaan.
+            $invoice = Invoice::lockForUpdate()->findOrFail($data['invoice_id']);
 
-            if ($invoice) {
-                $invoice->update(['status' => 'paid', 'paid_at' => $data['paid_at'] ?? now()]);
-                $this->billing->restoreIfSettled($invoice);
+            if (! in_array($invoice->status, ['unpaid', 'overdue'], true)) {
+                throw ValidationException::withMessages([
+                    'invoice_id' => "Invoice berstatus {$invoice->status}, tidak bisa dibayar.",
+                ]);
             }
+
+            if ($status === 'success') {
+                if (round((float) $data['amount'], 2) < round($invoice->final_amount, 2)) {
+                    throw ValidationException::withMessages([
+                        'amount' => 'Nominal kurang dari total tagihan.',
+                    ]);
+                }
+
+                if ($invoice->payments()->where('status', 'success')->exists()) {
+                    throw ValidationException::withMessages([
+                        'invoice_id' => 'Invoice ini sudah punya pembayaran sukses.',
+                    ]);
+                }
+            }
+
+            $payment = Payment::create([
+                'invoice_id'             => $invoice->id,
+                'gateway'                => $data['gateway'],
+                'gateway_transaction_id' => $data['gateway_transaction_id'] ?? null,
+                'method'                 => $data['method'] ?? null,
+                'amount'                 => $data['amount'],
+                'status'                 => $status,
+                'paid_at'                => $status === 'success' ? ($data['paid_at'] ?? now()) : null,
+                'raw_payload'            => ['source' => 'manual', 'recorded_by' => $request->user()->id],
+            ]);
+
+            if ($status === 'success') {
+                $invoice->update(['status' => 'paid', 'paid_at' => $payment->paid_at]);
+            }
+
+            return [$payment, $invoice];
+        });
+
+        // Panggil MikroTik SETELAH transaksi selesai, supaya lock database tidak
+        // tertahan menunggu router.
+        if ($status === 'success') {
+            $this->billing->restoreIfSettled($invoice);
         }
 
         return $this->created(new PaymentResource($payment), 'Pembayaran berhasil dicatat');

@@ -30,7 +30,7 @@ class CustomerController extends ApiController
 
         $customers = $query
             ->orderBy('name')
-            ->paginate($request->integer('per_page', 20));
+            ->paginate(min($request->integer('per_page', 20), 100));
 
         return $this->success([
             'data' => CustomerResource::collection($customers),
@@ -66,6 +66,11 @@ class CustomerController extends ApiController
 
     public function destroy(Customer $customer): JsonResponse
     {
+        // Pelanggan dengan langganan/tagihan jangan dihapus (riwayat keuangan harus utuh).
+        if ($customer->subscriptions()->exists()) {
+            return $this->error('Pelanggan masih punya langganan/riwayat tagihan dan tidak dapat dihapus. Ubah status menjadi inactive.', 422);
+        }
+
         $customer->delete();
 
         return $this->noContent();

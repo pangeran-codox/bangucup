@@ -124,19 +124,36 @@ type laravelResponse struct {
 	Data []laravelRouter `json:"data"`
 }
 
+// httpClient memakai timeout supaya satu permintaan yang menggantung
+// tidak menghentikan seluruh siklus polling.
+var httpClient = &http.Client{Timeout: 10 * time.Second}
+
 func (c *Collector) fetchRouters() ([]mikrotik.Router, error) {
-	url := c.cfg.LaravelAPIURL + "/routers"
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	// Endpoint internal: butuh token dengan ability routers:collect
+	// (buat dengan `php artisan collector:token`).
+	url := c.cfg.LaravelAPIURL + "/internal/routers"
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.LaravelAPIToken)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http get routers: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("laravel API returned status %d (cek COLLECTOR_API_TOKEN)", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
 
 	var result laravelResponse
 	if err := json.Unmarshal(body, &result); err != nil {
